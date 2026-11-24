@@ -351,6 +351,8 @@ kbd { border-radius: 6px; background: var(--surface-3); border-color: transparen
 .auth-divider { display: flex; align-items: center; gap: 12px; margin: 18px 0; color: var(--text-3); font-size: 12px; }
 .auth-divider::before, .auth-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
 .auth-fine { margin-top: 14px; color: var(--text-3); font-size: 12.5px; text-align: center; }
+.auth-note { display: flex; gap: 6px; align-items: flex-start; justify-content: center; margin-top: 8px; }
+.auth-note svg { flex: none; margin-top: 2px; }
 .auth-callout { display: flex; gap: 8px; align-items: flex-start; padding: 10px 12px; margin-bottom: 16px; border-radius: 12px; background: var(--warning-soft); color: var(--text-2); font-size: 13px; line-height: 1.45; }
 .auth-callout .icon { color: var(--warning); margin-top: 1px; }
 .auth-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 14px; flex-wrap: wrap; }

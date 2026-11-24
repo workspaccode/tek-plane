@@ -173,7 +173,8 @@ def test_google_start_redirect(monkeypatch):
     monkeypatch.setattr(config, "BASE_URL", "")
     # opened over Wi-Fi by IP: Google refuses such redirects, so the button is hidden and start bounces back
     with TestClient(app, base_url="http://192.168.1.20:8000") as c:
-        assert c.get("/api/auth/config").json()["google"] is False
+        cfg = c.get("/api/auth/config").json()
+        assert cfg["google"] is False and cfg["google_configured"] and not cfg["google_via_localhost"]
         r = c.get("/api/auth/google/start", follow_redirects=False)
         assert r.headers["location"].startswith("/login#error=")
     with TestClient(app, base_url="http://localhost:8000") as c:

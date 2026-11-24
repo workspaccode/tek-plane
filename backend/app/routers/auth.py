@@ -84,13 +84,24 @@ def google_available(request: Request) -> bool:
     if not (config.GOOGLE_CLIENT_ID and config.GOOGLE_CLIENT_SECRET):
         return False
     target = urlsplit(_redirect_uri(request))
-    return target.scheme == "https" or target.hostname in ("localhost", "127.0.0.1")
+    return target.scheme == "https" or target.hostname == "localhost"
+
+
+def on_host_computer(request: Request) -> bool:
+    """True when the browser runs on the same machine as the server, even if it opened the Wi-Fi IP."""
+    client = request.client.host if request.client else ""
+    return client in ("127.0.0.1", "::1") or client == request.url.hostname
 
 
 @router.get("/auth/config")
 def auth_config(request: Request):
+    configured = bool(config.GOOGLE_CLIENT_ID and config.GOOGLE_CLIENT_SECRET)
+    available = google_available(request)
     return {
-        "google": google_available(request),
+        "google": available,
+        "google_configured": configured,
+        # On the host computer, Google sign-in can still go through http://localhost
+        "google_via_localhost": configured and not available and not config.BASE_URL and on_host_computer(request),
         "email_delivery": mailer.provider(),
         "otp_length": 6,
         "resend_seconds": RESEND_SECONDS,

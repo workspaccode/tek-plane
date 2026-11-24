@@ -24,6 +24,15 @@ export default async function render(root, { mode }) {
   const hashError = new URLSearchParams(location.hash.slice(1)).get('error');
   if (hashError) history.replaceState({}, '', location.pathname + location.search);
 
+  // Google only redirects back to localhost or https. On the host computer (127.0.0.1 or its own Wi-Fi IP)
+  // sign-in goes through http://localhost instead; other devices use an email code.
+  const googleHref = () => {
+    const start = `/api/auth/google/start?next=${encodeURIComponent(nextPath())}`;
+    if (cfg.google) return start;
+    if (cfg.google_via_localhost) return `http://localhost${location.port ? `:${location.port}` : ''}${start}`;
+    return null;
+  };
+
   let email = '';
   let isNew = false;
   let resendTimer = null;
@@ -61,13 +70,15 @@ export default async function render(root, { mode }) {
       h('div', { class: 'auth-logo' }, h('span', { class: 'brand-mark' }, icon('layers', 18))),
       h('h2', null, 'Sign in to tek-plane'),
       h('p', { class: 'page-sub' }, 'New here? Signing in creates your account.'),
-      cfg.google ? [
-        h('a', { class: 'btn btn-google btn-lg btn-block', href: `/api/auth/google/start?next=${encodeURIComponent(nextPath())}` },
+      googleHref() ? [
+        h('a', { class: 'btn btn-google btn-lg btn-block', href: googleHref() },
           h('span', { html: GOOGLE_LOGO, style: { display: 'inline-flex' } }), 'Continue with Google'),
         h('div', { class: 'auth-divider' }, h('span', null, 'or')),
       ] : null,
       form,
-      h('p', { class: 'auth-fine' }, 'We’ll email you a 6-digit code and a one-click link. No password needed.'));
+      h('p', { class: 'auth-fine' }, 'We’ll email you a 6-digit code and a one-click link. No password needed.'),
+      cfg.google_configured && !googleHref() ? h('p', { class: 'auth-fine auth-note' }, icon('globe', 13),
+        'Google sign-in works on the computer running tek-plane. On this device, continue with your email.') : null);
     setTimeout(() => input.focus(), 0);
   }
 
