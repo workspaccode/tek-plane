@@ -62,5 +62,12 @@ SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USER or "tek-plane <no-reply@localhost>")
 SMTP_SECURITY = os.environ.get("SMTP_SECURITY", "starttls").lower()  # starttls | ssl | none
 
+# Alternative to SMTP: Resend (https://resend.com) HTTP API. Takes precedence when set.
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
+EMAIL_FROM = os.environ.get("EMAIL_FROM", "") or SMTP_FROM
+
+LOGIN_LINK_TTL_MINUTES = 10
+INVITE_LINK_TTL_DAYS = 7
+
 OTP_TTL_MINUTES = 10
 OTP_MAX_ATTEMPTS = 5

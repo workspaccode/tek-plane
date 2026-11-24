@@ -60,13 +60,29 @@ def _code_hash(email: str, code: str) -> str:
     return hmac.new(config.SECRET_KEY.encode(), f"{email}:{code}".encode(), hashlib.sha256).hexdigest()
 
 
+def public_base(request: Request) -> str:
+    return config.BASE_URL or str(request.base_url).rstrip("/")
+
+
+def issue_link(db: Session, request: Request, email: str, purpose: str, ttl: timedelta, next_path: str = "/dashboard") -> str:
+    """Create a single-use email link and return its URL. Only a hash of the token is stored."""
+    token = secrets.token_urlsafe(32)
+    db.add(m.EmailLink(email=email, token_hash=hashlib.sha256(token.encode()).hexdigest(), purpose=purpose,
+                       next_path=next_path, expires_at=m.utcnow() + ttl))
+    return f"{public_base(request)}/api/auth/link/{token}"
+
+
+def _needs_name(user: m.User) -> bool:
+    return not user.name or user.name == user.email.split("@")[0]
+
+
 # ---------------------------------------------------------------- config
 
 @router.get("/auth/config")
 def auth_config():
     return {
         "google": bool(config.GOOGLE_CLIENT_ID and config.GOOGLE_CLIENT_SECRET),
-        "email_delivery": "smtp" if mailer.email_configured() else "console",
+        "email_delivery": mailer.provider(),
         "otp_length": 6,
         "resend_seconds": RESEND_SECONDS,
     }
@@ -75,7 +91,7 @@ def auth_config():
 # ---------------------------------------------------------------- email one-time code
 
 @router.post("/auth/otp/request")
-def request_code(body: OtpRequestIn, db: Session = Depends(get_db)):
+def request_code(body: OtpRequestIn, request: Request, db: Session = Depends(get_db)):
     email = _normalize_email(body.email)
     now = m.utcnow()
     recent = db.scalars(select(m.OtpCode).where(
@@ -91,10 +107,13 @@ def request_code(body: OtpRequestIn, db: Session = Depends(get_db)):
     code = f"{secrets.randbelow(10**6):06d}"
     db.add(m.OtpCode(email=email, code_hash=_code_hash(email, code),
                      expires_at=now + timedelta(minutes=config.OTP_TTL_MINUTES)))
+    existing = db.scalar(select(m.User).where(m.User.email == email))
+    is_new = existing is None or not existing.email_verified
+    link = issue_link(db, request, email, "activate" if is_new else "login",
+                      timedelta(minutes=config.LOGIN_LINK_TTL_MINUTES))
     db.commit()
-    mailer.send_login_code(email, code)
-    exists = db.scalar(select(m.User.id).where(m.User.email == email)) is not None
-    return {"ok": True, "is_new": not exists, "expires_in": config.OTP_TTL_MINUTES * 60}
+    mailer.send_login_email(email, code, link, is_new)
+    return {"ok": True, "is_new": existing is None, "expires_in": config.OTP_TTL_MINUTES * 60}
 
 
 @router.post("/auth/otp/verify")
@@ -115,8 +134,29 @@ def verify_code(body: OtpVerifyIn, db: Session = Depends(get_db)):
                             "Wrong code. Request a new one.")
     otp.consumed = True
     user, is_new = get_or_create_user(db, email)
+    user.email_verified = True
     db.commit()
-    return {"token": create_token(user.id), "user": user_out(user), "is_new": is_new}
+    return {"token": create_token(user.id), "user": user_out(user), "is_new": is_new or _needs_name(user)}
+
+
+@router.get("/auth/link/{token}")
+def open_link(token: str, db: Session = Depends(get_db)):
+    """Sign-in / activation / invitation link from an email. Single use."""
+    link = db.scalar(select(m.EmailLink).where(m.EmailLink.token_hash == hashlib.sha256(token.encode()).hexdigest()))
+    if not link or link.used_at:
+        return _fail("This link was already used. Request a new code to sign in.")
+    if link.expires_at < m.utcnow():
+        return _fail("This link has expired. Request a new code to sign in.")
+    link.used_at = m.utcnow()
+    user, created = get_or_create_user(db, link.email)
+    user.email_verified = True
+    # the matching code can't be used any more either
+    for otp in db.scalars(select(m.OtpCode).where(m.OtpCode.email == link.email, m.OtpCode.consumed.is_(False))):
+        otp.consumed = True
+    db.commit()
+    new = "1" if created or _needs_name(user) else "0"
+    return RedirectResponse(f"/auth/callback#token={quote(create_token(user.id))}&next={quote(link.next_path)}&new={new}",
+                            status_code=302)
 
 
 # ---------------------------------------------------------------- Google OAuth (authorization code + PKCE)
@@ -193,10 +233,16 @@ def google_callback(request: Request, code: str = "", state: str = "", error: st
 
     email = claims["email"].lower()
     sub = str(claims["sub"])
+    google_name = (claims.get("name") or " ".join(filter(None, [claims.get("given_name"), claims.get("family_name")]))).strip()
     user = db.scalar(select(m.User).where(m.User.google_sub == sub))
     if not user:
-        user, _ = get_or_create_user(db, email, claims.get("name"))
+        user, _ = get_or_create_user(db, email, google_name or None)
         user.google_sub = sub
+    if google_name and _needs_name(user):
+        user.name = google_name[:120]
+    if claims.get("picture"):
+        user.avatar_url = str(claims["picture"])[:500]
+    user.email_verified = True
     db.commit()
     token = create_token(user.id)
     resp = RedirectResponse(f"/auth/callback#token={quote(token)}&next={quote(saved.get('next', '/dashboard'))}",

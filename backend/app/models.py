@@ -27,6 +27,8 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(120))
     password_hash: Mapped[str] = mapped_column(String(255), default="")  # unused: login is Google or email code
     google_sub: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
+    avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)  # e.g. Google profile photo
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     avatar_color: Mapped[str] = mapped_column(String(20), default="#4f7cff")
     title: Mapped[str] = mapped_column(String(120), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -294,6 +296,19 @@ class OtpCode(Base):
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     consumed: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
+class EmailLink(Base):
+    """Single-use sign-in / activation / invitation link sent by email."""
+    __tablename__ = "email_links"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    purpose: Mapped[str] = mapped_column(String(20), default="login")  # login | activate | invite
+    next_path: Mapped[str] = mapped_column(String(300), default="/dashboard")
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class MindMap(Base):

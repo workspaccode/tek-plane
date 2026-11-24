@@ -10,12 +10,16 @@ from backend.app.main import app  # noqa: E402
 
 
 SENT = {}
+LINKS = {}
+INVITES = {}
 
 
 @pytest.fixture(autouse=True)
 def capture_codes(monkeypatch):
     from backend.app import mailer
-    monkeypatch.setattr(mailer, "send_login_code", lambda to, code: SENT.__setitem__(to, code))
+    monkeypatch.setattr(mailer, "send_login_email", lambda to, code, link, is_new: (
+        SENT.__setitem__(to, code), LINKS.__setitem__(to, (link, is_new))))
+    monkeypatch.setattr(mailer, "send_invite_email", lambda to, inviter, project, link: INVITES.__setitem__(to, link))
     monkeypatch.setattr(mailer, "send_email", lambda *a, **k: None)
 
 
@@ -269,3 +273,66 @@ def test_mindmap_display_settings_and_fold():
         c.post(f"/api/mindmaps/{mm['id']}/fold", json={"level": None}, headers=h)
         nodes = c.get(f"/api/mindmaps/{mm['id']}", headers=h).json()["nodes"]
         assert not any(n["collapsed"] for n in nodes)
+
+
+def _follow(c, url):
+    from urllib.parse import parse_qs, urlparse
+    r = c.get(urlparse(url).path, follow_redirects=False)
+    loc = r.headers["location"]
+    return loc, parse_qs(urlparse(loc).fragment)
+
+
+def test_activation_and_login_links():
+    with TestClient(app) as c:
+        c.post("/api/auth/otp/request", json={"email": "link@m.io"})
+        link, is_new = LINKS["link@m.io"]
+        assert is_new and "/api/auth/link/" in link
+        loc, frag = _follow(c, link)
+        assert loc.startswith("/auth/callback#") and frag["new"] == ["1"]
+        h = {"Authorization": f"Bearer {frag['token'][0]}"}
+        me = c.get("/api/me", headers=h).json()
+        assert me["email"] == "link@m.io" and me["email_verified"] is True
+        # single use, and the code from the same email is now dead too
+        loc, _ = _follow(c, link)
+        assert loc.startswith("/login#error=")
+        assert c.post("/api/auth/otp/verify", json={"email": "link@m.io", "code": SENT["link@m.io"]}).status_code == 400
+
+
+def test_invite_link_opens_project():
+    with TestClient(app) as c:
+        h, _ = login(c, "boss@m.io", "Boss")
+        p = c.post("/api/projects", json={"name": "Invited"}, headers=h).json()
+        c.post(f"/api/projects/{p['id']}/members", json={"email": "guest@m.io"}, headers=h)
+        loc, frag = _follow(c, INVITES["guest@m.io"])
+        assert frag["next"] == [f"/projects/{p['id']}"] and frag["new"] == ["1"]
+        gh = {"Authorization": f"Bearer {frag['token'][0]}"}
+        assert c.get(f"/api/projects/{p['id']}", headers=gh).status_code == 200
+
+
+def test_google_signup_takes_name_photo_email(monkeypatch):
+    import jwt as pyjwt
+    from urllib.parse import parse_qs, urlparse
+    from backend.app import config
+    from backend.app.routers import auth as auth_router
+    monkeypatch.setattr(config, "GOOGLE_CLIENT_ID", "cid.apps.googleusercontent.com")
+    monkeypatch.setattr(config, "GOOGLE_CLIENT_SECRET", "secret")
+    claims = {"iss": "https://accounts.google.com", "aud": "cid.apps.googleusercontent.com", "sub": "g-123",
+              "email": "Sara.Ali@Gmail.com", "email_verified": True, "name": "Sara Ali",
+              "picture": "https://lh3.googleusercontent.com/a/photo123"}
+
+    class FakeRes:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self): return {"id_token": pyjwt.encode(claims, "x", algorithm="HS256")}
+
+    sent = {}
+    monkeypatch.setattr(auth_router.httpx, "post", lambda url, **kw: (sent.update(kw["data"]), FakeRes())[1])
+    with TestClient(app) as c:
+        r = c.get("/api/auth/google/start", follow_redirects=False)
+        state = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
+        r = c.get(f"/api/auth/google/callback?code=abc&state={state}", follow_redirects=False)
+        frag = parse_qs(urlparse(r.headers["location"]).fragment)
+        assert sent["code_verifier"] and sent["code"] == "abc"
+        me = c.get("/api/me", headers={"Authorization": f"Bearer {frag['token'][0]}"}).json()
+        assert me["name"] == "Sara Ali" and me["email"] == "sara.ali@gmail.com"
+        assert me["avatar_url"].endswith("photo123") and me["email_verified"] and me["google_linked"]

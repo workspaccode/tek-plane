@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from .. import config, mailer
+from .auth import issue_link
 from .. import models as m
 from ..config import UPLOAD_DIR
 from ..db import get_db
@@ -247,12 +248,9 @@ def add_member(project_id: int, body: MemberIn, request: Request, user: m.User =
     log(db, project_id, user, "member.added", member=invitee.name, role=body.role)
     notify(db, [invitee.id], user, "project.invited", f"{user.name} added you to “{p.name}”", project_id)
     db.commit()
-    base = config.BASE_URL or str(request.base_url).rstrip("/")
-    mailer.send_email(
-        email, f"{user.name} invited you to “{p.name}” on tek-plane",
-        f"{user.name} added you to the project “{p.name}” on tek-plane.\n\n"
-        f"Open {base}/login and sign in with {email}" + (" (Google or a one-time email code)." if created else "."),
-    )
+    link = issue_link(db, request, email, "invite", timedelta(days=config.INVITE_LINK_TTL_DAYS), f"/projects/{project_id}")
+    db.commit()
+    mailer.send_invite_email(email, user.name, p.name, link)
     db.refresh(pm)
     broadcast(db, project_id, "members.changed", {}, user.id)
     return member_out(pm)

@@ -30,6 +30,10 @@ def _migrate() -> None:
             if "google_sub" not in cols:
                 conn.execute(text("ALTER TABLE users ADD COLUMN google_sub VARCHAR(64)"))
                 conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_google_sub ON users (google_sub)"))
+            if "avatar_url" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN avatar_url VARCHAR(500)"))
+            if "email_verified" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN email_verified BOOLEAN NOT NULL DEFAULT 0"))
 
 
 @asynccontextmanager

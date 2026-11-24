@@ -13,7 +13,8 @@ def iso(dt: datetime | None) -> str | None:
 def user_out(u: m.User | None) -> dict | None:
     if not u:
         return None
-    return {"id": u.id, "name": u.name, "email": u.email, "avatar_color": u.avatar_color, "title": u.title}
+    return {"id": u.id, "name": u.name, "email": u.email, "avatar_color": u.avatar_color, "title": u.title,
+            "avatar_url": u.avatar_url, "email_verified": bool(u.email_verified)}
 
 
 def project_out(p: m.Project, role: str | None = None) -> dict:
