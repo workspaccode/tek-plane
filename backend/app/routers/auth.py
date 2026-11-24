@@ -6,7 +6,7 @@ import hmac
 import re
 import secrets
 from datetime import timedelta
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
 import jwt
@@ -78,10 +78,19 @@ def _needs_name(user: m.User) -> bool:
 
 # ---------------------------------------------------------------- config
 
+def google_available(request: Request) -> bool:
+    """Google only accepts redirects to https URLs or to localhost, so a plain http://192.168.x.x address
+    (sharing over Wi-Fi) can't use Google sign-in; those visitors sign in with an email code instead."""
+    if not (config.GOOGLE_CLIENT_ID and config.GOOGLE_CLIENT_SECRET):
+        return False
+    target = urlsplit(_redirect_uri(request))
+    return target.scheme == "https" or target.hostname in ("localhost", "127.0.0.1")
+
+
 @router.get("/auth/config")
-def auth_config():
+def auth_config(request: Request):
     return {
-        "google": bool(config.GOOGLE_CLIENT_ID and config.GOOGLE_CLIENT_SECRET),
+        "google": google_available(request),
         "email_delivery": mailer.provider(),
         "otp_length": 6,
         "resend_seconds": RESEND_SECONDS,
@@ -174,6 +183,8 @@ def _fail(message: str) -> RedirectResponse:
 def google_start(request: Request, next: str = "/dashboard"):
     if not (config.GOOGLE_CLIENT_ID and config.GOOGLE_CLIENT_SECRET):
         return _fail("Google sign-in is not configured on this server.")
+    if not google_available(request):
+        return _fail("Google sign-in works only on the computer running tek-plane. Use an email code here.")
     state = secrets.token_urlsafe(24)
     verifier = secrets.token_urlsafe(48)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()

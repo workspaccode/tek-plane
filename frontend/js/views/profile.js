@@ -22,7 +22,7 @@ export default async function render(root) {
   const preview = h('div', { class: 'pf-avatar' });
   const name = h('input', { class: 'input', id: 'pf-name', value: u.name, maxlength: 120, autocomplete: 'name' });
   const title = h('input', { class: 'input', id: 'pf-title', value: u.title || '', maxlength: 120, placeholder: 'e.g. Product designer' });
-  const drawPreview = () => mount(preview, avatar({ name: name.value || u.name, avatar_color: color }, 72, { title: false }));
+  const drawPreview = () => mount(preview, avatar({ name: name.value || u.name, avatar_color: color, avatar_url: u.avatar_url }, 72, { title: false }));
   name.addEventListener('input', drawPreview);
   drawPreview();
 
@@ -33,7 +33,9 @@ export default async function render(root) {
       preview,
       h('div', { class: 'grow' },
         h('div', { class: 'pf-name' }, u.name),
-        h('div', { class: 'muted' }, u.email))),
+        h('div', { class: 'muted row', style: { gap: '6px' } }, u.email,
+          u.email_verified ? h('span', { class: 'role-badge admin', title: 'Email verified' }, icon('check', 11), 'Verified') : null),
+        u.avatar_url ? h('div', { class: 'hint' }, 'Photo from your Google account') : null)),
     h('div', { class: 'pf-fields' },
       h('div', { class: 'field' }, h('label', { class: 'label', for: 'pf-name' }, 'Full name'), name),
       h('div', { class: 'field' }, h('label', { class: 'label', for: 'pf-title' }, 'Job title'), title)),

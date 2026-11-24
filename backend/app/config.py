@@ -56,7 +56,7 @@ GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 
 # Email delivery for one-time login codes. Without SMTP_HOST, codes are printed to the server console.
 SMTP_HOST = os.environ.get("SMTP_HOST", "")
-SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_PORT = int(os.environ.get("SMTP_PORT") or "587")
 SMTP_USER = os.environ.get("SMTP_USER", "")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USER or "tek-plane <no-reply@localhost>")
@@ -64,7 +64,7 @@ SMTP_SECURITY = os.environ.get("SMTP_SECURITY", "starttls").lower()  # starttls 
 
 # Alternative to SMTP: Resend (https://resend.com) HTTP API. Takes precedence when set.
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
-EMAIL_FROM = os.environ.get("EMAIL_FROM", "") or SMTP_FROM
+EMAIL_FROM = os.environ.get("EMAIL_FROM", "") or "tek-plane <onboarding@resend.dev>"
 
 LOGIN_LINK_TTL_MINUTES = 10
 INVITE_LINK_TTL_DAYS = 7

@@ -10,8 +10,10 @@ import {
 import { addBoardDialog, isMindmapProject, projectShell } from '../components/projectShell.js';
 import { openTask } from '../components/taskModal.js';
 import {
-  DEFAULT_SETTINGS, LAYOUTS, PALETTES, branchPath, foldPoint, inkFor, layout, layoutGlyph,
+  DEFAULT_SETTINGS, LAYOUTS, PALETTES, branchPath, foldPoint, inkFor, keyScheme, layout, layoutGlyph,
 } from '../components/mindmapLayout.js';
+
+const LAYOUT_GROUPS = ['Maps', 'Charts', 'Lists'];
 const views = new Map(); // map id -> { x, y, k } so switching tabs keeps your viewport
 
 export default async function render(root, { params, query }) {
@@ -93,11 +95,8 @@ export default async function render(root, { params, query }) {
           icon('mindmap', 16), h('span', { class: 'truncate' }, m ? m.title : 'No mind maps'), icon('chevron-down', 14)),
       m ? h('span', { class: 'muted small mm-updated' }, `${current.nodes.length} topics · edited ${fmtRelative(m.updated_at)}`) : null,
       h('div', { class: 'grow' }),
-      m ? h('div', { class: 'seg mm-layouts', role: 'radiogroup', 'aria-label': 'Layout' },
-        Object.entries(LAYOUTS).map(([id, info]) => h('button', {
-          class: S().layout === id ? 'active' : '', role: 'radio', 'aria-checked': String(S().layout === id),
-          title: `${info.label}: ${info.hint}`, 'aria-label': info.label, onclick: () => setSettings({ layout: id }, { refit: true }),
-        }, layoutGlyph(id), h('span', { class: 'mm-layout-label' }, info.label)))) : null,
+      m ? h('button', { class: 'mm-layout-pick', 'aria-haspopup': 'true', title: 'Change layout', onclick: (e) => openLayoutPicker(e.currentTarget) },
+        layoutGlyph(S().layout), h('span', { class: 'mm-layout-label' }, (LAYOUTS[S().layout] || LAYOUTS.map).label), icon('chevron-down', 13)) : null,
       m ? h('button', { class: 'btn btn-secondary btn-sm mm-display-btn', onclick: (e) => openDisplay(e.currentTarget) },
         icon('settings', 14), 'Display') : null,
       m ? h('div', { class: 'mm-zoom' },
@@ -212,8 +211,18 @@ export default async function render(root, { params, query }) {
       visibleKids(n).forEach((c) => walk(c, depth + 1));
     };
     walk(root, 0);
+    const numbers = new Map(); // Outline layout: 1, 1.1, 1.1.1 …
+    if (st.layout === 'outline') {
+      const num = (n, prefix) => visibleKids(n).forEach((c, i) => {
+        const label = prefix ? `${prefix}.${i + 1}` : `${i + 1}`;
+        numbers.set(c.id, label);
+        num(c, label);
+      });
+      num(root, '');
+    }
     for (const n of order) {
       const el = nodeEl(n, depthOf.get(n.id));
+      if (numbers.has(n.id)) el.prepend(h('span', { class: 'mm-num' }, numbers.get(n.id)));
       world.append(el);
       els.set(n.id, el);
     }
@@ -233,7 +242,7 @@ export default async function render(root, { params, query }) {
       els.get(n.id).style.transform = `translate(${p.x}px, ${p.y}px)`;
       const childCount = kids(n.id).length;
       if (n.parent_id !== null && childCount) {
-        const fp = foldPoint(st.layout, p);
+        const fp = foldPoint(p);
         world.append(h('button', {
           class: ['mm-fold', n.collapsed && 'collapsed'], style: { transform: `translate(${fp.x}px, ${fp.y}px)`, '--branch': branchColor(n) },
           'aria-label': n.collapsed ? `Expand (${childCount})` : 'Collapse', title: n.collapsed ? `Show ${childCount} sub-topics` : 'Collapse',
@@ -244,16 +253,21 @@ export default async function render(root, { params, query }) {
       if (n.parent_id === null) continue;
       const depth = p.depth;
       const wdt = Math.max(st.line_width * 0.45, st.line_width * (1.5 - 0.3 * depth));
-      let prev = null;
-      if (st.layout === 'tree') {
-        const sib = visibleKids(byId.get(n.parent_id));
-        const i = sib.findIndex((x) => x.id === n.id);
-        prev = i > 0 ? pos.get(sib[i - 1].id) : null;
-      }
-      const d = branchPath(st.layout, st.lines, pos.get(n.parent_id), p, { underline, prev });
-      paths += `<path d="${d}" stroke="${branchColor(n)}" stroke-width="${wdt.toFixed(2)}" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="${depth > 1 ? 0.75 : 0.92}"/>`;
+      // previous visible sibling: stems and spines continue from it instead of overlapping
+      const sib = visibleKids(byId.get(n.parent_id));
+      const i = sib.findIndex((x) => x.id === n.id);
+      const prev = i > 0 ? pos.get(sib[i - 1].id) : null;
+      const d = branchPath(st.lines, pos.get(n.parent_id), p, { underline, prev });
+      if (d) paths += `<path d="${d}" stroke="${branchColor(n)}" stroke-width="${wdt.toFixed(2)}" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="${depth > 1 ? 0.75 : 0.92}"/>`;
     }
-    links.innerHTML = paths;
+    // shared shapes: timeline axis, spines, fishbone backbone, braces
+    let extras = '';
+    for (const x of pos.extras) {
+      const color = x.colorOf ? branchColor(byId.get(x.colorOf)) : null;
+      const w = (x.width || 1) * st.line_width * (x.colorOf ? 0.8 : 0.9);
+      extras += `<path d="${x.d}" ${color ? `stroke="${color}"` : 'style="stroke:var(--text-3)"'} stroke-width="${w.toFixed(2)}" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`;
+    }
+    links.innerHTML = extras + paths;
     applyView();
   }
 
@@ -332,6 +346,23 @@ export default async function render(root, { params, query }) {
     } catch (err) { errorToast(err); }
   }
 
+  /** All layouts as tiles, grouped (Maps / Charts / Lists). */
+  function layoutGrid(after) {
+    return h('div', { class: 'mm-layout-groups' }, LAYOUT_GROUPS.map((g) => h('div', { class: 'mm-layout-group' },
+      h('div', { class: 'mm-layout-group-title' }, g),
+      h('div', { class: 'mm-layout-grid' }, Object.entries(LAYOUTS).filter(([, info]) => info.group === g).map(([id, info]) => h('button', {
+        class: ['mm-layout-tile', S().layout === id && 'active'], 'aria-pressed': String(S().layout === id), title: info.hint,
+        onclick: () => { setSettings({ layout: id }, { refit: true }); after?.(); },
+      }, layoutGlyph(id), h('span', null, info.label)))))));
+  }
+
+  function openLayoutPicker(anchor) {
+    popover(anchor, (_, close) => h('div', { class: 'mm-display' },
+      h('div', { class: 'mm-display-head' }, h('strong', null, 'Layout'),
+        h('span', { class: 'muted small' }, `${Object.keys(LAYOUTS).length} ways to see this map`)),
+      h('div', { class: 'mm-dsec' }, layoutGrid(close))), { width: 380, align: 'end', className: 'mm-display-pop' });
+  }
+
   let displayRedraw = null;
 
   function openDisplay(anchor) {
@@ -361,10 +392,7 @@ export default async function render(root, { params, query }) {
         h('div', { class: 'mm-display-head' },
           h('strong', null, 'Display'),
           h('span', { class: 'muted small' }, editable() ? 'Saved for everyone on this map' : 'Only for you (view access)')),
-        section('Layout', h('div', { class: 'mm-layout-grid' }, Object.entries(LAYOUTS).map(([id, info]) => h('button', {
-          class: ['mm-layout-tile', S().layout === id && 'active'], 'aria-pressed': String(S().layout === id),
-          onclick: () => setSettings({ layout: id }, { refit: true }),
-        }, layoutGlyph(id), h('span', null, info.label))))),
+        section('Layout', layoutGrid()),
         section('Branches', seg('lines', [['curved', 'Curved'], ['straight', 'Straight'], ['elbow', 'Elbow']])),
         section('Topic shape', seg('shape', [['rounded', 'Rounded'], ['pill', 'Pill'], ['rect', 'Box'], ['underline', 'Line'], ['plain', 'Text']])),
         section('Colors', h('div', { class: 'mm-palettes' }, Object.entries(PALETTES).map(([id, pal]) => h('button', {
@@ -414,7 +442,7 @@ export default async function render(root, { params, query }) {
       maxX = Math.max(maxX, x + el.offsetWidth); maxY = Math.max(maxY, y + el.offsetHeight);
     }
     const W = canvas.clientWidth; const H = canvas.clientHeight;
-    if (S().layout === 'tree') {
+    if (S().layout === 'tree' || S().layout === 'outline') {
       // a tall outline: fit the width, keep text readable, start at the top
       const k = Math.min(1.1, Math.max(0.8, Math.min((W - 120) / (maxX - minX || 1), (H - 100) / (maxY - minY || 1))));
       view = { k, x: W / 2 - ((minX + maxX) / 2) * k, y: 56 - minY * k };
@@ -521,7 +549,7 @@ export default async function render(root, { params, query }) {
     if (!p.target) return;
     const target = byId.get(p.target);
     const body = { parent_id: target.id };
-    if (target.parent_id === null && S().layout === 'map') {
+    if (target.parent_id === null && (S().layout === 'map' || S().layout === 'vmap')) {
       const r = canvas.getBoundingClientRect();
       body.side = (p.lx ?? p.sx) < r.left + view.x ? 'left' : 'right';
     }
@@ -747,21 +775,17 @@ export default async function render(root, { params, query }) {
     const kind = S().layout;
     if (kind === 'map') return navigateBalanced(n, key);
     const isRoot = n.parent_id === null;
-    // per layout: which arrow goes to the first child / the parent / previous & next sibling
-    const keys = {
-      logic: { child: 'ArrowRight', parent: 'ArrowLeft', prev: 'ArrowUp', next: 'ArrowDown' },
-      radial: { child: 'ArrowRight', parent: 'ArrowLeft', prev: 'ArrowUp', next: 'ArrowDown' },
-      org: { child: 'ArrowDown', parent: 'ArrowUp', prev: 'ArrowLeft', next: 'ArrowRight' },
-      tree: { child: 'ArrowRight', parent: 'ArrowLeft', prev: 'ArrowUp', next: 'ArrowDown' },
-    }[kind];
+    // per layout (and per side): which arrow goes to the first child / parent / previous & next sibling
+    const firstKid = visibleKids(n)[0];
+    const keys = keyScheme(kind, isRoot && firstKid ? lastPos.get(firstKid.id) : lastPos.get(n.id));
     let target = null;
     if (key === keys.child) {
       if (n.collapsed && !isRoot) { toggleFold(n); return; }
       target = visibleKids(n)[0];
     } else if (key === keys.parent) {
       target = isRoot ? null : byId.get(n.parent_id);
-    } else if (kind === 'tree') {
-      // the tree reads top to bottom, so up/down walk the visible outline
+    } else if (keys.linear) {
+      // list layouts read top to bottom, so up/down walk the visible outline
       const i = order.findIndex((x) => x.id === n.id);
       target = order[i + (key === keys.prev ? -1 : 1)];
     } else if (!isRoot) {

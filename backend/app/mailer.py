@@ -27,6 +27,13 @@ def email_configured() -> bool:
     return provider() != "console"
 
 
+def sender() -> str:
+    """Resend uses EMAIL_FROM; SMTP uses SMTP_FROM, falling back to the login address."""
+    if provider() == "resend":
+        return config.EMAIL_FROM
+    return config.SMTP_FROM or config.SMTP_USER
+
+
 def _log(msg: str) -> None:
     print(f"[tek-plane] {msg}", file=sys.stderr, flush=True)
 
@@ -45,7 +52,7 @@ def _hint(exc: Exception) -> str:
 
 def _send_smtp(to: str, subject: str, text: str, html: str | None) -> None:
     msg = EmailMessage()
-    msg["From"] = config.EMAIL_FROM
+    msg["From"] = sender()
     msg["To"] = to
     msg["Subject"] = subject
     msg.set_content(text)
@@ -66,7 +73,7 @@ def _send_smtp(to: str, subject: str, text: str, html: str | None) -> None:
 def _send_resend(to: str, subject: str, text: str, html: str | None) -> None:
     res = httpx.post("https://api.resend.com/emails", timeout=20,
                      headers={"Authorization": f"Bearer {config.RESEND_API_KEY}"},
-                     json={"from": config.EMAIL_FROM, "to": [to], "subject": subject, "text": text,
+                     json={"from": sender(), "to": [to], "subject": subject, "text": text,
                            **({"html": html} if html else {})})
     if res.status_code >= 300:
         raise RuntimeError(f"Resend API {res.status_code}: {res.text[:300]}")
@@ -157,7 +164,7 @@ if __name__ == "__main__":
     target = sys.argv[1]
     kind = provider()
     print(f"Provider: {kind}" + (f" ({config.SMTP_HOST}:{config.SMTP_PORT}, {config.SMTP_SECURITY})" if kind == "smtp" else ""))
-    print(f"From:     {config.EMAIL_FROM}")
+    print(f"From:     {sender()}")
     if kind == "console":
         print("No email provider configured. Copy .env.example to .env and set RESEND_API_KEY or the SMTP_* values.")
         sys.exit(1)

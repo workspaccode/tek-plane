@@ -141,7 +141,10 @@ def test_full_flow():
             assert "pong" in ws.receive_text()
 
 
-def test_otp_rules():
+def test_otp_rules(monkeypatch):
+    from backend.app import config
+    for key in ("RESEND_API_KEY", "SMTP_HOST", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"):
+        monkeypatch.setattr(config, key, "")  # ignore the developer's own .env
     with TestClient(app) as c:
         assert c.post("/api/auth/otp/request", json={"email": "not-an-email"}).status_code == 422
         r = c.post("/api/auth/otp/request", json={"email": "Otp@X.io"})
@@ -167,7 +170,14 @@ def test_google_start_redirect(monkeypatch):
     from backend.app import config
     monkeypatch.setattr(config, "GOOGLE_CLIENT_ID", "cid.apps.googleusercontent.com")
     monkeypatch.setattr(config, "GOOGLE_CLIENT_SECRET", "secret")
-    with TestClient(app) as c:
+    monkeypatch.setattr(config, "BASE_URL", "")
+    # opened over Wi-Fi by IP: Google refuses such redirects, so the button is hidden and start bounces back
+    with TestClient(app, base_url="http://192.168.1.20:8000") as c:
+        assert c.get("/api/auth/config").json()["google"] is False
+        r = c.get("/api/auth/google/start", follow_redirects=False)
+        assert r.headers["location"].startswith("/login#error=")
+    with TestClient(app, base_url="http://localhost:8000") as c:
+        assert c.get("/api/auth/config").json()["google"] is True
         r = c.get("/api/auth/google/start?next=//evil.com", follow_redirects=False)
         loc = r.headers["location"]
         assert loc.startswith("https://accounts.google.com/") and "code_challenge_method=S256" in loc
@@ -327,7 +337,7 @@ def test_google_signup_takes_name_photo_email(monkeypatch):
 
     sent = {}
     monkeypatch.setattr(auth_router.httpx, "post", lambda url, **kw: (sent.update(kw["data"]), FakeRes())[1])
-    with TestClient(app) as c:
+    with TestClient(app, base_url="http://localhost:8000") as c:
         r = c.get("/api/auth/google/start", follow_redirects=False)
         state = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
         r = c.get(f"/api/auth/google/callback?code=abc&state={state}", follow_redirects=False)

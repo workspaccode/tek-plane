@@ -310,11 +310,18 @@ export function avatar(user, size = 28, { title = true } = {}) {
     return h('span', { class: 'avatar avatar-empty', style: { width: `${size}px`, height: `${size}px` }, title: title ? 'Unassigned' : null },
       icon('user', Math.round(size * 0.55)));
   }
-  return h('span', {
+  const el = h('span', {
     class: 'avatar',
     style: { width: `${size}px`, height: `${size}px`, background: user.avatar_color, fontSize: `${Math.round(size * 0.4)}px` },
     title: title ? user.name : null,
   }, initials(user.name));
+  if (user.avatar_url) {
+    // profile photo (e.g. from Google); falls back to initials if it can't load
+    const img = h('img', { class: 'avatar-img', src: user.avatar_url, alt: '', referrerpolicy: 'no-referrer', loading: 'lazy', draggable: 'false' });
+    img.addEventListener('error', () => img.remove());
+    el.appendChild(img);
+  }
+  return el;
 }
 
 export function avatarStack(users, size = 26, max = 4) {

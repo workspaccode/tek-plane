@@ -12,7 +12,12 @@ function nextPath() {
 }
 
 export default async function render(root, { mode }) {
-  if (mode === 'callback') return handleCallback();
+  let callbackUser = null;
+  if (mode === 'callback') {
+    const res = await handleCallback();
+    if (!res) return;
+    callbackUser = res; // new account from a link: ask for a name first
+  }
 
   let cfg = { google: false, email_delivery: 'console', otp_length: 6, resend_seconds: 30 };
   try { cfg = await api.get('/auth/config'); } catch (_) {}
@@ -62,7 +67,7 @@ export default async function render(root, { mode }) {
         h('div', { class: 'auth-divider' }, h('span', null, 'or')),
       ] : null,
       form,
-      h('p', { class: 'auth-fine' }, 'We’ll email you a 6-digit code. No password needed.'));
+      h('p', { class: 'auth-fine' }, 'We’ll email you a 6-digit code and a one-click link. No password needed.'));
     setTimeout(() => input.focus(), 0);
   }
 
@@ -145,9 +150,10 @@ export default async function render(root, { mode }) {
     mount(panel,
       h('div', { class: 'auth-logo' }, h('span', { class: 'brand-mark' }, icon('message', 18))),
       h('h2', null, 'Check your email'),
-      h('p', { class: 'page-sub' }, 'We sent a 6-digit code to ', h('strong', null, email), '. It expires in 10 minutes.'),
+      h('p', { class: 'page-sub' }, 'We sent a 6-digit code and a one-click ', isNew ? 'activation' : 'sign-in',
+        ' link to ', h('strong', null, email), '. Both expire in 10 minutes.'),
       cfg.email_delivery === 'console' ? h('div', { class: 'auth-callout' }, icon('alert', 15),
-        h('span', null, 'Email sending isn’t configured on this server yet, so the code was printed in the server terminal.')) : null,
+        h('span', null, 'Email sending isn’t configured on this server yet, so the code and link were printed in the server terminal.')) : null,
       form,
       h('div', { class: 'auth-row' },
         h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => stepEmail() }, icon('chevron-left', 14), 'Use a different email'),
@@ -192,17 +198,24 @@ export default async function render(root, { mode }) {
         h('div', { class: 'hero-board', 'aria-hidden': 'true' }, col('#8792a2', 3), col('#3d6bff', 2), col('#f5a623', 3), col('#2fb67c', 1))),
       h('p', { style: { fontSize: '13px', opacity: 0.6 } }, '© tek-plane')),
     h('section', { class: 'auth-panel' }, panel)));
-  stepEmail(hashError);
+  if (callbackUser) stepName(callbackUser);
+  else stepEmail(hashError);
   return () => clearInterval(resendTimer);
 }
 
-function handleCallback() {
+/** Google / email-link sign-in lands here with #token=…&next=…&new=1. Returns the user when a name is still needed. */
+async function handleCallback() {
   const params = new URLSearchParams(location.hash.slice(1));
   const token = params.get('token');
   const next = params.get('next');
-  history.replaceState({}, '', '/auth/callback');
-  if (!token) { navigate('/login#error=Sign-in failed', { replace: true }); return; }
+  const safeNext = next && next.startsWith('/') && !next.startsWith('//') ? next : '/dashboard';
+  if (!token) { navigate('/login#error=Sign-in failed', { replace: true }); return null; }
   setToken(token);
   state.user = null;
-  navigate(next && next.startsWith('/') && !next.startsWith('//') ? next : '/dashboard', { replace: true });
+  if (params.get('new') === '1') {
+    history.replaceState({}, '', `/auth/callback?next=${encodeURIComponent(safeNext)}`);
+    try { return await api.get('/me'); } catch (_) { /* fall through */ }
+  }
+  navigate(safeNext, { replace: true });
+  return null;
 }

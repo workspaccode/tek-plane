@@ -30,7 +30,8 @@ class FoldIn(BaseModel):
 
 # Display settings: allowed values (choices) or numeric ranges. Anything else is dropped.
 SETTING_CHOICES = {
-    "layout": ("map", "logic", "org", "tree", "radial"),
+    "layout": ("map", "logic", "left", "vmap", "radial", "bubble", "org", "orgup", "brace", "fishbone", "timeline",
+               "vtimeline", "tree", "columns", "outline"),
     "lines": ("curved", "straight", "elbow"),
     "shape": ("rounded", "pill", "rect", "underline", "plain"),
     "palette": ("vibrant", "pastel", "ocean", "sunset", "mono"),
