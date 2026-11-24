@@ -39,6 +39,7 @@ class Project(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     color: Mapped[str] = mapped_column(String(20), default="#4f7cff")
     icon: Mapped[str] = mapped_column(String(40), default="folder")
+    kind: Mapped[str] = mapped_column(String(20), default="board")  # board | mindmap
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
     task_counter: Mapped[int] = mapped_column(Integer, default=0)
@@ -300,6 +301,7 @@ class MindMap(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
     title: Mapped[str] = mapped_column(String(200))
+    settings: Mapped[dict] = mapped_column(JSON, default=dict)  # display: layout, lines, shape, palette, …
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)

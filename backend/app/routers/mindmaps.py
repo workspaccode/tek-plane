@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from .. import models as m
 from ..db import get_db
 from ..security import current_user
-from ..serializers import iso, user_out
+from ..serializers import iso, project_out, user_out
 from ..services import broadcast, get_or_404, log, place_task, require_role
 
 router = APIRouter(prefix="/api", tags=["mindmaps"])
@@ -20,7 +20,37 @@ class MapIn(BaseModel):
 
 
 class MapPatch(BaseModel):
-    title: str = Field(min_length=1, max_length=200)
+    title: str | None = Field(None, min_length=1, max_length=200)
+    settings: dict | None = None
+
+
+class FoldIn(BaseModel):
+    level: int | None = None  # show topics down to this depth; None = expand everything
+
+
+# Display settings: allowed values (choices) or numeric ranges. Anything else is dropped.
+SETTING_CHOICES = {
+    "layout": ("map", "logic", "org", "tree", "radial"),
+    "lines": ("curved", "straight", "elbow"),
+    "shape": ("rounded", "pill", "rect", "underline", "plain"),
+    "palette": ("vibrant", "pastel", "ocean", "sunset", "mono"),
+    "background": ("dots", "grid", "plain"),
+}
+SETTING_RANGES = {"spacing_x": (16, 200), "spacing_y": (2, 60), "font_scale": (0.7, 1.6), "line_width": (0.5, 8)}
+SETTING_FLAGS = ("show_tasks", "show_notes")
+
+
+def clean_settings(raw: dict) -> dict:
+    out = {}
+    for k, v in (raw or {}).items():
+        if k in SETTING_CHOICES and v in SETTING_CHOICES[k]:
+            out[k] = v
+        elif k in SETTING_RANGES and isinstance(v, (int, float)) and not isinstance(v, bool):
+            lo, hi = SETTING_RANGES[k]
+            out[k] = max(lo, min(hi, float(v)))
+        elif k in SETTING_FLAGS and isinstance(v, bool):
+            out[k] = v
+    return out
 
 
 class NodeIn(BaseModel):
@@ -84,7 +114,8 @@ def _touch(db: Session, mm: m.MindMap, user: m.User):
 
 def _map_out(mm: m.MindMap, node_count: int | None = None) -> dict:
     return {"id": mm.id, "project_id": mm.project_id, "title": mm.title, "created_by": mm.created_by,
-            "created_at": iso(mm.created_at), "updated_at": iso(mm.updated_at), "node_count": node_count}
+            "created_at": iso(mm.created_at), "updated_at": iso(mm.updated_at), "node_count": node_count,
+            "settings": mm.settings or {}}
 
 
 def _node_out(n: m.MindNode, task: m.Task | None) -> dict:
@@ -150,20 +181,46 @@ def get_map(map_id: int, user: m.User = Depends(current_user), db: Session = Dep
 
 
 @router.patch("/mindmaps/{map_id}")
-def rename_map(map_id: int, body: MapPatch, user: m.User = Depends(current_user), db: Session = Depends(get_db)):
+def update_map(map_id: int, body: MapPatch, user: m.User = Depends(current_user), db: Session = Depends(get_db)):
     mm = _map(db, map_id, user, "member")
-    mm.title = body.title.strip()
-    root = _root(db, mm.id)
-    if root and (not root.text or root.text == mm.title):
-        root.text = mm.title
+    if body.title is not None:
+        old = mm.title
+        mm.title = body.title.strip()
+        root = _root(db, mm.id)
+        if root and (not root.text or root.text == old):
+            root.text = mm.title
+    if body.settings is not None:
+        mm.settings = {**(mm.settings or {}), **clean_settings(body.settings)}
+        if body.settings.get("reset"):
+            mm.settings = {}
     _touch(db, mm, user)
     return _map_out(mm)
+
+
+@router.post("/mindmaps/{map_id}/fold")
+def fold_map(map_id: int, body: FoldIn, user: m.User = Depends(current_user), db: Session = Depends(get_db)):
+    """Collapse every topic at `level` (so deeper ones are hidden), or expand all when level is None."""
+    mm = _map(db, map_id, user, "member")
+    nodes = db.scalars(select(m.MindNode).where(m.MindNode.map_id == mm.id)).all()
+    by_parent: dict = {}
+    for n in nodes:
+        by_parent.setdefault(n.parent_id, []).append(n)
+    stack = [(n, 0) for n in by_parent.get(None, [])]
+    while stack:
+        n, depth = stack.pop()
+        n.collapsed = body.level is not None and depth >= body.level and n.parent_id is not None
+        stack.extend((c, depth + 1) for c in by_parent.get(n.id, []))
+    _touch(db, mm, user)
+    return {"ok": True}
 
 
 @router.delete("/mindmaps/{map_id}")
 def delete_map(map_id: int, user: m.User = Depends(current_user), db: Session = Depends(get_db)):
     mm = _map(db, map_id, user, "member")
     pid, title = mm.project_id, mm.title
+    project = db.get(m.Project, pid)
+    if project.kind == "mindmap" and db.scalar(select(func.count(m.MindMap.id)).where(m.MindMap.project_id == pid)) <= 1:
+        raise HTTPException(400, "This project is a mind map. Delete the project instead.")
     db.delete(mm)
     log(db, pid, user, "mindmap.deleted", title=title)
     db.commit()
@@ -201,6 +258,11 @@ def update_node(node_id: int, body: NodePatch, user: m.User = Depends(current_us
         node.text = (data["text"] or "").strip()
         if node.parent_id is None and node.text:
             mm.title = node.text
+            project = db.get(m.Project, mm.project_id)
+            if project.kind == "mindmap" and project.name != node.text:
+                project.name = node.text[:160]
+                db.flush()
+                broadcast(db, project.id, "project.updated", {"project": project_out(project)}, user.id)
     for k in ("note", "color", "collapsed"):
         if k in data:
             setattr(node, k, data[k])

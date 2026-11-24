@@ -12,7 +12,8 @@ const view = (path) => () => import(path);
 
 defineRoutes([
   { path: '/login', load: view('./views/auth.js'), public: true, props: { mode: 'login' } },
-  { path: '/register', load: view('./views/auth.js'), public: true, props: { mode: 'register' } },
+  { path: '/register', redirect: '/login' },
+  { path: '/auth/callback', load: view('./views/auth.js'), public: true, props: { mode: 'callback' } },
   { path: '/', redirect: '/dashboard' },
   { path: '/dashboard', load: view('./views/dashboard.js'), nav: 'dashboard' },
   { path: '/tasks', load: view('./views/mytasks.js'), nav: 'tasks' },
@@ -20,11 +21,12 @@ defineRoutes([
   { path: '/time', load: view('./views/time.js'), nav: 'time' },
   { path: '/profile', load: view('./views/profile.js'), nav: 'profile' },
   { path: '/projects', load: view('./views/projects.js'), nav: 'projects' },
-  { path: '/projects/:id', load: view('./views/board.js'), nav: 'project' },
+  { path: '/projects/:id', load: view('./views/projectHome.js'), nav: 'project' },
   { path: '/projects/:id/list', load: view('./views/list.js'), nav: 'project' },
   { path: '/projects/:id/timeline', load: view('./views/timeline.js'), nav: 'project' },
   { path: '/projects/:id/reports', load: view('./views/reports.js'), nav: 'project' },
   { path: '/projects/:id/activity', load: view('./views/activity.js'), nav: 'project' },
+  { path: '/projects/:id/mindmap', load: view('./views/mindmap.js'), nav: 'project' },
   { path: '/projects/:id/settings', load: view('./views/projectSettings.js'), nav: 'project' },
 ], { load: null, notFound: true });
 
@@ -198,8 +200,12 @@ function showShortcuts() {
 onRoute(async ({ route, params, query, samePath }) => {
   if (route?.redirect) { navigate(route.redirect, { replace: true }); return; }
   const authed = !!getToken();
-  if (!route?.public && !authed) { navigate('/login', { replace: true }); return; }
-  if (route?.public && authed && state.user) { navigate('/dashboard', { replace: true }); return; }
+  if (!route?.public && !authed) {
+    const here = location.pathname + location.search;
+    navigate(here === '/' || here === '/dashboard' ? '/login' : `/login?next=${encodeURIComponent(here)}`, { replace: true });
+    return;
+  }
+  if (route?.public && route.props?.mode !== 'callback' && authed && state.user) { navigate('/dashboard', { replace: true }); return; }
 
   if (samePath) { syncTaskModal(query); return; }
 
@@ -356,7 +362,7 @@ function currentNav() {
 }
 
 window.addEventListener('tp:unauthorized', () => {
-  if (location.pathname !== '/login' && location.pathname !== '/register') logout();
+  if (location.pathname !== '/login' && location.pathname !== '/auth/callback') logout();
 });
 
 // ------------------------------------------------------------------ keyboard

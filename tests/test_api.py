@@ -213,3 +213,59 @@ def test_invite_creates_account_and_mindmap():
         assert c.delete(f"/api/mind-nodes/{a['id']}", headers=h1).json()["deleted"] == 2
         assert len(c.get(f"/api/projects/{p['id']}/mindmaps", headers=h1).json()) == 1
         assert c.delete(f"/api/mindmaps/{mm['id']}", headers=h1).status_code == 200
+
+
+def test_mindmap_project():
+    with TestClient(app) as c:
+        h, _ = login(c, "mapper@m.io", "Mapper")
+        p = c.post("/api/projects", json={"name": "Ideas", "kind": "mindmap", "icon": "mindmap"}, headers=h).json()
+        assert p["kind"] == "mindmap"
+        board = c.get(f"/api/projects/{p['id']}", headers=h).json()
+        assert board["sections"] == [] and board["tags"] == []
+        maps = c.get(f"/api/projects/{p['id']}/mindmaps", headers=h).json()
+        assert len(maps) == 1 and maps[0]["title"] == "Ideas"
+        # the only map of a mind map project can't be deleted
+        assert c.delete(f"/api/mindmaps/{maps[0]['id']}", headers=h).status_code == 400
+        # renaming the central topic renames the project, and vice versa
+        root = next(n for n in c.get(f"/api/mindmaps/{maps[0]['id']}", headers=h).json()["nodes"] if n["parent_id"] is None)
+        c.patch(f"/api/mind-nodes/{root['id']}", json={"text": "Big ideas"}, headers=h)
+        assert c.get(f"/api/projects/{p['id']}", headers=h).json()["project"]["name"] == "Big ideas"
+        c.patch(f"/api/projects/{p['id']}", json={"name": "Q3 ideas"}, headers=h)
+        nodes = c.get(f"/api/mindmaps/{maps[0]['id']}", headers=h).json()["nodes"]
+        assert next(n for n in nodes if n["parent_id"] is None)["text"] == "Q3 ideas"
+        # add a board later: sections appear, the map stays and topics can become tasks
+        conv = c.post(f"/api/projects/{p['id']}/convert", json={"template": "personal"}, headers=h).json()
+        assert conv["kind"] == "board"
+        board = c.get(f"/api/projects/{p['id']}", headers=h).json()
+        assert [s["name"] for s in board["sections"]] == ["To Do", "Doing", "Done"]
+        child = c.post(f"/api/mindmaps/{maps[0]['id']}/nodes", json={"parent_id": root["id"], "text": "Try it"}, headers=h).json()
+        r = c.post(f"/api/mind-nodes/{child['id']}/to-task", json={"section_id": board["sections"][0]["id"]}, headers=h)
+        assert r.status_code == 200
+        assert c.get("/api/projects", headers=h).json()[0]["kind"] == "board"
+
+
+def test_mindmap_display_settings_and_fold():
+    with TestClient(app) as c:
+        h, _ = login(c, "layout@m.io", "Layout")
+        p = c.post("/api/projects", json={"name": "Layouts", "kind": "mindmap"}, headers=h).json()
+        mm = c.get(f"/api/projects/{p['id']}/mindmaps", headers=h).json()[0]
+        assert mm["settings"] == {}
+        r = c.patch(f"/api/mindmaps/{mm['id']}", headers=h, json={"settings": {
+            "layout": "radial", "lines": "elbow", "shape": "underline", "palette": "ocean", "spacing_x": 999,
+            "font_scale": 1.2, "show_tasks": False, "layout_bogus": 1, "background": "hacker"}}).json()
+        s = r["settings"]
+        assert s["layout"] == "radial" and s["lines"] == "elbow" and s["spacing_x"] == 200 and s["show_tasks"] is False
+        assert "layout_bogus" not in s and "background" not in s
+        assert c.patch(f"/api/mindmaps/{mm['id']}", headers=h, json={"settings": {"layout": "org"}}).json()["settings"]["shape"] == "underline"
+        assert c.patch(f"/api/mindmaps/{mm['id']}", headers=h, json={"settings": {"reset": True}}).json()["settings"] == {}
+        # fold: root -> a -> b -> c
+        root = c.get(f"/api/mindmaps/{mm['id']}", headers=h).json()["nodes"][0]
+        a = c.post(f"/api/mindmaps/{mm['id']}/nodes", json={"parent_id": root["id"], "text": "a"}, headers=h).json()
+        b = c.post(f"/api/mindmaps/{mm['id']}/nodes", json={"parent_id": a["id"], "text": "b"}, headers=h).json()
+        c.post(f"/api/mindmaps/{mm['id']}/nodes", json={"parent_id": b["id"], "text": "c"}, headers=h)
+        c.post(f"/api/mindmaps/{mm['id']}/fold", json={"level": 1}, headers=h)
+        nodes = {n["text"]: n for n in c.get(f"/api/mindmaps/{mm['id']}", headers=h).json()["nodes"]}
+        assert nodes["a"]["collapsed"] and not nodes["Layouts"]["collapsed"]
+        c.post(f"/api/mindmaps/{mm['id']}/fold", json={"level": None}, headers=h)
+        nodes = c.get(f"/api/mindmaps/{mm['id']}", headers=h).json()["nodes"]
+        assert not any(n["collapsed"] for n in nodes)

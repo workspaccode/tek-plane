@@ -6,7 +6,7 @@ import { openNewProject } from './projectForm.js';
 
 /** opts: { projectId, sectionId, title } */
 export function openQuickTask(opts = {}) {
-  const eligible = state.projects.filter((p) => !p.archived && p.role && p.role !== 'viewer');
+  const eligible = state.projects.filter((p) => !p.archived && p.kind !== 'mindmap' && p.role && p.role !== 'viewer');
   if (!eligible.length) {
     const m = openModal({
       title: 'New task', width: 440,

@@ -43,6 +43,11 @@ class ProjectIn(BaseModel):
     color: str = "#4f7cff"
     icon: str = "folder"
     template: str = "kanban"
+    kind: str = "board"  # board | mindmap
+
+
+class ConvertIn(BaseModel):
+    template: str = "kanban"
 
 
 class ProjectPatch(BaseModel):
@@ -109,15 +114,23 @@ def list_projects(user: m.User = Depends(current_user), db: Session = Depends(ge
 
 @router.post("/projects")
 def create_project(body: ProjectIn, user: m.User = Depends(current_user), db: Session = Depends(get_db)):
+    if body.kind not in ("board", "mindmap"):
+        raise HTTPException(422, "Invalid project type")
     p = m.Project(name=body.name.strip(), description=body.description, color=body.color,
-                  icon=body.icon, owner_id=user.id)
+                  icon=body.icon, owner_id=user.id, kind=body.kind)
     db.add(p)
     db.flush()
     db.add(m.ProjectMember(project_id=p.id, user_id=user.id, role="owner"))
-    apply_template(db, p, body.template)
-    for name, color in DEFAULT_TAGS:
-        db.add(m.Tag(project_id=p.id, name=name, color=color))
-    log(db, p.id, user, "project.created", name=p.name)
+    if body.kind == "mindmap":
+        mm = m.MindMap(project_id=p.id, title=p.name, created_by=user.id)
+        db.add(mm)
+        db.flush()
+        db.add(m.MindNode(map_id=mm.id, text=p.name))
+    else:
+        apply_template(db, p, body.template)
+        for name, color in DEFAULT_TAGS:
+            db.add(m.Tag(project_id=p.id, name=name, color=color))
+    log(db, p.id, user, "project.created", name=p.name, kind=p.kind)
     db.commit()
     return project_out(p, "owner")
 
@@ -156,14 +169,45 @@ def update_project(project_id: int, body: ProjectPatch,
     pm = require_role(db, project_id, user, "admin")
     p = db.get(m.Project, project_id)
     changes = body.model_dump(exclude_unset=True)
+    old_name = p.name
     for k, v in changes.items():
         setattr(p, k, v.strip() if isinstance(v, str) and k == "name" else v)
+    if p.kind == "mindmap" and "name" in changes and p.name != old_name:
+        # a mind map project *is* its map: keep the central topic in step with the project name
+        mm = db.scalar(select(m.MindMap).where(m.MindMap.project_id == p.id).order_by(m.MindMap.id))
+        if mm:
+            mm.title = p.name
+            root = db.scalar(select(m.MindNode).where(m.MindNode.map_id == mm.id, m.MindNode.parent_id.is_(None)))
+            if root:
+                root.text = p.name
+            broadcast(db, p.id, "mindmap.changed", {"map_id": mm.id}, user.id)
     if "archived" in changes:
         log(db, p.id, user, "project.archived" if p.archived else "project.restored")
     else:
         log(db, p.id, user, "project.updated", fields=list(changes))
     db.commit()
     broadcast(db, p.id, "project.updated", {"project": project_out(p)}, user.id)
+    return project_out(p, pm.role)
+
+
+@router.post("/projects/{project_id}/convert")
+def convert_to_board(project_id: int, body: ConvertIn, user: m.User = Depends(current_user),
+                     db: Session = Depends(get_db)):
+    """Add a board to a mind map project. The map stays, and topics can now become tasks."""
+    pm = require_role(db, project_id, user, "admin")
+    p = db.get(m.Project, project_id)
+    if p.kind == "board":
+        return project_out(p, pm.role)
+    p.kind = "board"
+    if not db.scalar(select(func.count(m.Section.id)).where(m.Section.project_id == p.id)):
+        apply_template(db, p, body.template)
+    if not db.scalar(select(func.count(m.Tag.id)).where(m.Tag.project_id == p.id)):
+        for name, color in DEFAULT_TAGS:
+            db.add(m.Tag(project_id=p.id, name=name, color=color))
+    log(db, p.id, user, "project.converted")
+    db.commit()
+    broadcast(db, p.id, "project.updated", {"project": project_out(p)}, user.id)
+    broadcast(db, p.id, "board.changed", {}, user.id)
     return project_out(p, pm.role)
 
 

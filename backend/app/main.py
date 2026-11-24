@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import select
+from sqlalchemy import inspect, select, text
 
 from . import models as m
 from .config import FRONTEND_DIR
@@ -14,8 +14,27 @@ from .routers import auth, mindmaps, personal, projects, sections, tasks
 from .security import user_from_token
 
 
+def _migrate() -> None:
+    """Small additive migrations for databases created by earlier versions."""
+    insp = inspect(engine)
+    tables = insp.get_table_names()
+    if "projects" in tables and "kind" not in {c["name"] for c in insp.get_columns("projects")}:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE projects ADD COLUMN kind VARCHAR(20) NOT NULL DEFAULT 'board'"))
+    if "mind_maps" in tables and "settings" not in {c["name"] for c in insp.get_columns("mind_maps")}:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE mind_maps ADD COLUMN settings JSON"))
+    if "users" in tables:
+        cols = {c["name"] for c in insp.get_columns("users")}
+        with engine.begin() as conn:
+            if "google_sub" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN google_sub VARCHAR(64)"))
+                conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_google_sub ON users (google_sub)"))
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    _migrate()
     Base.metadata.create_all(engine)
     hub.bind_loop(asyncio.get_running_loop())
     yield
@@ -60,7 +79,16 @@ async def websocket(ws: WebSocket, token: str = ""):
             hub.publish(_project_audience(user.id), {"type": "presence", "data": {"user_id": user.id, "online": False}})
 
 
-app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
+class RevalidatingStaticFiles(StaticFiles):
+    """Browsers must re-check CSS/JS on every load (cheap 304s), so updates show up without a hard refresh."""
+
+    def file_response(self, *args, **kwargs):
+        resp = super().file_response(*args, **kwargs)
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+
+app.mount("/static", RevalidatingStaticFiles(directory=FRONTEND_DIR), name="static")
 
 
 @app.get("/{path:path}", include_in_schema=False)

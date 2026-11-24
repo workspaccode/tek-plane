@@ -113,11 +113,15 @@ const ICONS = {
   briefcase: 'M20 7H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2zM16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16',
   globe: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z',
   target: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 18a6 6 0 1 0 0-12 6 6 0 0 0 0 12zM12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4z',
+  mindmap: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM4 6a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM4 22a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM20 6a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM20 22a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM5.5 5.5l4.3 4.3M18.5 5.5l-4.3 4.3M5.5 18.5l4.3-4.3M18.5 18.5l-4.3-4.3',
+  minus: 'M5 12h14',
+  maximize: 'M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3',
+  note: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M16 13H8M16 17H8M10 9H8',
   keyboard: 'M20 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zM6 9h.01M10 9h.01M14 9h.01M18 9h.01M8 13h.01M12 13h.01M16 13h.01M7 17h10',
 };
 
 export const ICON_NAMES = Object.keys(ICONS);
-export const PROJECT_ICONS = ['folder', 'rocket', 'briefcase', 'code', 'globe', 'target', 'heart', 'star', 'flag',
+export const PROJECT_ICONS = ['folder', 'mindmap', 'rocket', 'briefcase', 'code', 'globe', 'target', 'heart', 'star', 'flag',
   'bulb', 'layers', 'pen', 'chart', 'users', 'calendar', 'zap'];
 
 export function icon(name, size = 16, extraClass = '') {
