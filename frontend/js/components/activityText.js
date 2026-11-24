@@ -20,7 +20,10 @@ export function activityText(a, { withTask = true } = {}) {
       case 'section.deleted': return ['deleted the section ', b(d.name)];
       case 'automation.created': return ['added an automation to ', b(d.section)];
       case 'automation.ran': return ['Automation in ', b(d.section), ' updated ', task];
-      case 'task.created': return [d.duplicated_from ? 'duplicated ' : 'created ', task, d.section ? ` in ${d.section}` : ''];
+      case 'task.created': return [d.duplicated_from ? 'duplicated ' : 'created ', task, d.section ? ` in ${d.section}` : '', d.from_mindmap ? ` from mind map “${d.from_mindmap}”` : ''];
+      case 'mindmap.created': return ['created the mind map ', b(d.title)];
+      case 'project.converted': return ['added a board to this mind map project'];
+      case 'mindmap.deleted': return ['deleted the mind map ', b(d.title)];
       case 'task.deleted': return ['deleted ', task];
       case 'task.completed': return ['completed ', task];
       case 'task.reopened': return ['reopened ', task];
@@ -56,7 +59,7 @@ export function activityIcon(action) {
     'task.created': 'plus', 'task.completed': 'check-circle', 'task.reopened': 'repeat', 'task.archived': 'archive',
     'task.deleted': 'trash', 'task.moved': 'arrow-right', 'task.assigned': 'user', 'comment.added': 'message',
     'attachment.added': 'paperclip', 'time.tracked': 'clock', 'automation.ran': 'zap', 'member.added': 'user-plus',
-    'checklist.checked': 'checklist', 'relation.added': 'link', 'task.due_date': 'calendar', 'task.priority': 'flag',
+    'checklist.checked': 'checklist', 'relation.added': 'link', 'task.due_date': 'calendar', 'task.priority': 'flag', 'mindmap.created': 'mindmap', 'mindmap.deleted': 'mindmap',
   };
   return map[action] || 'activity';
 }

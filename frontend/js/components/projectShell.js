@@ -4,17 +4,24 @@ import { api } from '../api.js';
 import { navigate } from '../router.js';
 import { can, emit, loadBoard, loadProjects, on, state } from '../store.js';
 import {
-  PRIORITIES, avatar, confirmDialog, debounce, errorToast, h, icon, menu, mount, pickerPopover, toast,
+  PRIORITIES, avatar, confirmDialog, debounce, errorToast, h, icon, menu, mount, openModal, pickerPopover, toast,
 } from '../ui.js';
-import { openNewProject } from './projectForm.js';
+import { openNewProject, TEMPLATE_INFO } from './projectForm.js';
 
-const TABS = [
-  ['', 'board', 'Board'],
-  ['/list', 'list', 'List'],
-  ['/timeline', 'timeline', 'Timeline'],
-  ['/reports', 'chart', 'Reports'],
-  ['/activity', 'activity', 'Activity'],
+// [path suffix, icon, label, tab id]
+const BOARD_TABS = [
+  ['', 'board', 'Board', 'board'],
+  ['/list', 'list', 'List', 'list'],
+  ['/timeline', 'timeline', 'Timeline', 'timeline'],
+  ['/mindmap', 'mindmap', 'Mind Map', 'mindmap'],
+  ['/reports', 'chart', 'Reports', 'reports'],
+  ['/activity', 'activity', 'Activity', 'activity'],
 ];
+const MINDMAP_TABS = [
+  ['', 'mindmap', 'Mind Map', 'mindmap'],
+  ['/activity', 'activity', 'Activity', 'activity'],
+];
+export const isMindmapProject = () => state.board?.project.kind === 'mindmap';
 
 // ------------------------------------------------------------------ filters
 
@@ -127,6 +134,11 @@ export async function projectShell(root, projectId, tab, onBoard) {
   projectId = Number(projectId);
   resetFiltersFor(projectId);
   const board = await loadBoard(projectId);
+  if (board.project.kind === 'mindmap' && !['mindmap', 'activity', 'settings'].includes(tab)) {
+    // board-only views don't exist for mind map projects
+    navigate(`/projects/${projectId}`, { replace: true });
+    return { body: h('div'), board, cleanup: () => {} };
+  }
   const header = h('div', { class: 'project-header' });
   const body = h('div', { class: 'project-body' });
   root.classList.add('project-view');
@@ -142,6 +154,7 @@ export async function projectShell(root, projectId, tab, onBoard) {
         h('div', { class: 'grow' },
           h('div', { class: 'row', style: { gap: '8px' } },
             h('h1', { class: 'project-name truncate' }, p.name),
+            p.kind === 'mindmap' ? h('span', { class: 'role-badge kind-badge' }, icon('mindmap', 11), 'Mind map') : null,
             p.archived ? h('span', { class: 'role-badge' }, 'Archived') : null,
             h('button', { class: 'icon-btn sm', 'aria-label': 'Project menu', onclick: (e) => projectMenu(e.currentTarget) }, icon('chevron-down', 16))),
           p.description ? h('div', { class: 'project-desc truncate' }, p.description) : null),
@@ -152,8 +165,8 @@ export async function projectShell(root, projectId, tab, onBoard) {
           can('admin') ? h('button', { class: 'btn btn-secondary btn-sm', onclick: () => navigate(`/projects/${p.id}/settings?tab=members`) },
             icon('user-plus', 14), 'Invite') : null)),
       h('nav', { class: 'tabs project-tabs' },
-        TABS.map(([suffix, ic, label]) => h('a', {
-          href: `/projects/${p.id}${suffix}`, class: ['tab', tab === (suffix.slice(1) || 'board') && 'active'],
+        (p.kind === 'mindmap' ? MINDMAP_TABS : BOARD_TABS).map(([suffix, ic, label, id]) => h('a', {
+          href: `/projects/${p.id}${suffix}`, class: ['tab', tab === id && 'active'],
         }, icon(ic, 15), label)),
         h('div', { class: 'grow' }),
         h('a', { href: `/projects/${p.id}/settings`, class: ['tab', tab === 'settings' && 'active'] }, icon('settings', 15), 'Settings')));
@@ -164,6 +177,7 @@ export async function projectShell(root, projectId, tab, onBoard) {
     menu(anchor, [
       can('admin') ? { label: 'Edit project', icon: 'edit', onClick: () => openNewProject(p) } : null,
       { label: 'Project settings', icon: 'settings', onClick: () => navigate(`/projects/${p.id}/settings`) },
+      can('admin') && p.kind === 'mindmap' ? { label: 'Add a board…', icon: 'board', onClick: () => addBoardDialog() } : null,
       can('admin') ? { label: p.archived ? 'Restore project' : 'Archive project', icon: 'archive', onClick: async () => {
         try {
           await api.patch(`/projects/${p.id}`, { archived: !p.archived });
@@ -190,4 +204,37 @@ export async function projectShell(root, projectId, tab, onBoard) {
     on('presence', () => drawHeader()),
   ];
   return { body, board, cleanup: () => offs.forEach((off) => off()) };
+}
+
+/** Mind map project → also get a board (sections), so topics can become tasks. Resolves true when done. */
+export function addBoardDialog() {
+  return new Promise((resolve) => {
+    const p = state.board.project;
+    let template = 'kanban';
+    let done = false;
+    const grid = h('div', { class: 'template-grid' });
+    const draw = () => mount(grid, Object.entries(TEMPLATE_INFO).filter(([id]) => id !== 'blank').map(([id, t]) => h('button', {
+      type: 'button', class: ['template-card', id === template && 'active'], onclick: () => { template = id; draw(); },
+    }, h('strong', null, t.label), h('span', null, t.desc))));
+    draw();
+    const go = async () => {
+      try {
+        await api.post(`/projects/${p.id}/convert`, { template });
+        done = true;
+        dlg.close();
+        await Promise.all([loadBoard(p.id), loadProjects()]);
+        toast('Board added. Topics can now become tasks.', 'success');
+      } catch (err) { errorToast(err); }
+    };
+    const dlg = openModal({
+      title: 'Add a board to this project', width: 520,
+      content: h('div', null,
+        h('p', { class: 'confirm-text', style: { marginBottom: '14px' } },
+          'Your mind map stays exactly as it is. The project gets Board, List, Timeline and Reports, and any topic can be turned into a task.'),
+        h('div', { class: 'field' }, h('label', { class: 'label' }, 'Board layout'), grid)),
+      footer: [h('button', { class: 'btn btn-ghost', onclick: () => dlg.close() }, 'Cancel'),
+        h('button', { class: 'btn btn-primary', onclick: go }, icon('board', 14), 'Add board')],
+      onClose: () => resolve(done),
+    });
+  });
 }

@@ -10,12 +10,16 @@ from backend.app.main import app  # noqa: E402
 
 
 SENT = {}
+LINKS = {}
+INVITES = {}
 
 
 @pytest.fixture(autouse=True)
 def capture_codes(monkeypatch):
     from backend.app import mailer
-    monkeypatch.setattr(mailer, "send_login_code", lambda to, code: SENT.__setitem__(to, code))
+    monkeypatch.setattr(mailer, "send_login_email", lambda to, code, link, is_new: (
+        SENT.__setitem__(to, code), LINKS.__setitem__(to, (link, is_new))))
+    monkeypatch.setattr(mailer, "send_invite_email", lambda to, inviter, project, link: INVITES.__setitem__(to, link))
     monkeypatch.setattr(mailer, "send_email", lambda *a, **k: None)
 
 
@@ -137,7 +141,10 @@ def test_full_flow():
             assert "pong" in ws.receive_text()
 
 
-def test_otp_rules():
+def test_otp_rules(monkeypatch):
+    from backend.app import config
+    for key in ("RESEND_API_KEY", "SMTP_HOST", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"):
+        monkeypatch.setattr(config, key, "")  # ignore the developer's own .env
     with TestClient(app) as c:
         assert c.post("/api/auth/otp/request", json={"email": "not-an-email"}).status_code == 422
         r = c.post("/api/auth/otp/request", json={"email": "Otp@X.io"})
@@ -163,7 +170,15 @@ def test_google_start_redirect(monkeypatch):
     from backend.app import config
     monkeypatch.setattr(config, "GOOGLE_CLIENT_ID", "cid.apps.googleusercontent.com")
     monkeypatch.setattr(config, "GOOGLE_CLIENT_SECRET", "secret")
-    with TestClient(app) as c:
+    monkeypatch.setattr(config, "BASE_URL", "")
+    # opened over Wi-Fi by IP: Google refuses such redirects, so the button is hidden and start bounces back
+    with TestClient(app, base_url="http://192.168.1.20:8000") as c:
+        cfg = c.get("/api/auth/config").json()
+        assert cfg["google"] is False and cfg["google_configured"] and not cfg["google_via_localhost"]
+        r = c.get("/api/auth/google/start", follow_redirects=False)
+        assert r.headers["location"].startswith("/login#error=")
+    with TestClient(app, base_url="http://localhost:8000") as c:
+        assert c.get("/api/auth/config").json()["google"] is True
         r = c.get("/api/auth/google/start?next=//evil.com", follow_redirects=False)
         loc = r.headers["location"]
         assert loc.startswith("https://accounts.google.com/") and "code_challenge_method=S256" in loc
@@ -213,3 +228,122 @@ def test_invite_creates_account_and_mindmap():
         assert c.delete(f"/api/mind-nodes/{a['id']}", headers=h1).json()["deleted"] == 2
         assert len(c.get(f"/api/projects/{p['id']}/mindmaps", headers=h1).json()) == 1
         assert c.delete(f"/api/mindmaps/{mm['id']}", headers=h1).status_code == 200
+
+
+def test_mindmap_project():
+    with TestClient(app) as c:
+        h, _ = login(c, "mapper@m.io", "Mapper")
+        p = c.post("/api/projects", json={"name": "Ideas", "kind": "mindmap", "icon": "mindmap"}, headers=h).json()
+        assert p["kind"] == "mindmap"
+        board = c.get(f"/api/projects/{p['id']}", headers=h).json()
+        assert board["sections"] == [] and board["tags"] == []
+        maps = c.get(f"/api/projects/{p['id']}/mindmaps", headers=h).json()
+        assert len(maps) == 1 and maps[0]["title"] == "Ideas"
+        # the only map of a mind map project can't be deleted
+        assert c.delete(f"/api/mindmaps/{maps[0]['id']}", headers=h).status_code == 400
+        # renaming the central topic renames the project, and vice versa
+        root = next(n for n in c.get(f"/api/mindmaps/{maps[0]['id']}", headers=h).json()["nodes"] if n["parent_id"] is None)
+        c.patch(f"/api/mind-nodes/{root['id']}", json={"text": "Big ideas"}, headers=h)
+        assert c.get(f"/api/projects/{p['id']}", headers=h).json()["project"]["name"] == "Big ideas"
+        c.patch(f"/api/projects/{p['id']}", json={"name": "Q3 ideas"}, headers=h)
+        nodes = c.get(f"/api/mindmaps/{maps[0]['id']}", headers=h).json()["nodes"]
+        assert next(n for n in nodes if n["parent_id"] is None)["text"] == "Q3 ideas"
+        # add a board later: sections appear, the map stays and topics can become tasks
+        conv = c.post(f"/api/projects/{p['id']}/convert", json={"template": "personal"}, headers=h).json()
+        assert conv["kind"] == "board"
+        board = c.get(f"/api/projects/{p['id']}", headers=h).json()
+        assert [s["name"] for s in board["sections"]] == ["To Do", "Doing", "Done"]
+        child = c.post(f"/api/mindmaps/{maps[0]['id']}/nodes", json={"parent_id": root["id"], "text": "Try it"}, headers=h).json()
+        r = c.post(f"/api/mind-nodes/{child['id']}/to-task", json={"section_id": board["sections"][0]["id"]}, headers=h)
+        assert r.status_code == 200
+        assert c.get("/api/projects", headers=h).json()[0]["kind"] == "board"
+
+
+def test_mindmap_display_settings_and_fold():
+    with TestClient(app) as c:
+        h, _ = login(c, "layout@m.io", "Layout")
+        p = c.post("/api/projects", json={"name": "Layouts", "kind": "mindmap"}, headers=h).json()
+        mm = c.get(f"/api/projects/{p['id']}/mindmaps", headers=h).json()[0]
+        assert mm["settings"] == {}
+        r = c.patch(f"/api/mindmaps/{mm['id']}", headers=h, json={"settings": {
+            "layout": "radial", "lines": "elbow", "shape": "underline", "palette": "ocean", "spacing_x": 999,
+            "font_scale": 1.2, "show_tasks": False, "layout_bogus": 1, "background": "hacker"}}).json()
+        s = r["settings"]
+        assert s["layout"] == "radial" and s["lines"] == "elbow" and s["spacing_x"] == 200 and s["show_tasks"] is False
+        assert "layout_bogus" not in s and "background" not in s
+        assert c.patch(f"/api/mindmaps/{mm['id']}", headers=h, json={"settings": {"layout": "org"}}).json()["settings"]["shape"] == "underline"
+        assert c.patch(f"/api/mindmaps/{mm['id']}", headers=h, json={"settings": {"reset": True}}).json()["settings"] == {}
+        # fold: root -> a -> b -> c
+        root = c.get(f"/api/mindmaps/{mm['id']}", headers=h).json()["nodes"][0]
+        a = c.post(f"/api/mindmaps/{mm['id']}/nodes", json={"parent_id": root["id"], "text": "a"}, headers=h).json()
+        b = c.post(f"/api/mindmaps/{mm['id']}/nodes", json={"parent_id": a["id"], "text": "b"}, headers=h).json()
+        c.post(f"/api/mindmaps/{mm['id']}/nodes", json={"parent_id": b["id"], "text": "c"}, headers=h)
+        c.post(f"/api/mindmaps/{mm['id']}/fold", json={"level": 1}, headers=h)
+        nodes = {n["text"]: n for n in c.get(f"/api/mindmaps/{mm['id']}", headers=h).json()["nodes"]}
+        assert nodes["a"]["collapsed"] and not nodes["Layouts"]["collapsed"]
+        c.post(f"/api/mindmaps/{mm['id']}/fold", json={"level": None}, headers=h)
+        nodes = c.get(f"/api/mindmaps/{mm['id']}", headers=h).json()["nodes"]
+        assert not any(n["collapsed"] for n in nodes)
+
+
+def _follow(c, url):
+    from urllib.parse import parse_qs, urlparse
+    r = c.get(urlparse(url).path, follow_redirects=False)
+    loc = r.headers["location"]
+    return loc, parse_qs(urlparse(loc).fragment)
+
+
+def test_activation_and_login_links():
+    with TestClient(app) as c:
+        c.post("/api/auth/otp/request", json={"email": "link@m.io"})
+        link, is_new = LINKS["link@m.io"]
+        assert is_new and "/api/auth/link/" in link
+        loc, frag = _follow(c, link)
+        assert loc.startswith("/auth/callback#") and frag["new"] == ["1"]
+        h = {"Authorization": f"Bearer {frag['token'][0]}"}
+        me = c.get("/api/me", headers=h).json()
+        assert me["email"] == "link@m.io" and me["email_verified"] is True
+        # single use, and the code from the same email is now dead too
+        loc, _ = _follow(c, link)
+        assert loc.startswith("/login#error=")
+        assert c.post("/api/auth/otp/verify", json={"email": "link@m.io", "code": SENT["link@m.io"]}).status_code == 400
+
+
+def test_invite_link_opens_project():
+    with TestClient(app) as c:
+        h, _ = login(c, "boss@m.io", "Boss")
+        p = c.post("/api/projects", json={"name": "Invited"}, headers=h).json()
+        c.post(f"/api/projects/{p['id']}/members", json={"email": "guest@m.io"}, headers=h)
+        loc, frag = _follow(c, INVITES["guest@m.io"])
+        assert frag["next"] == [f"/projects/{p['id']}"] and frag["new"] == ["1"]
+        gh = {"Authorization": f"Bearer {frag['token'][0]}"}
+        assert c.get(f"/api/projects/{p['id']}", headers=gh).status_code == 200
+
+
+def test_google_signup_takes_name_photo_email(monkeypatch):
+    import jwt as pyjwt
+    from urllib.parse import parse_qs, urlparse
+    from backend.app import config
+    from backend.app.routers import auth as auth_router
+    monkeypatch.setattr(config, "GOOGLE_CLIENT_ID", "cid.apps.googleusercontent.com")
+    monkeypatch.setattr(config, "GOOGLE_CLIENT_SECRET", "secret")
+    claims = {"iss": "https://accounts.google.com", "aud": "cid.apps.googleusercontent.com", "sub": "g-123",
+              "email": "Sara.Ali@Gmail.com", "email_verified": True, "name": "Sara Ali",
+              "picture": "https://lh3.googleusercontent.com/a/photo123"}
+
+    class FakeRes:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self): return {"id_token": pyjwt.encode(claims, "x", algorithm="HS256")}
+
+    sent = {}
+    monkeypatch.setattr(auth_router.httpx, "post", lambda url, **kw: (sent.update(kw["data"]), FakeRes())[1])
+    with TestClient(app, base_url="http://localhost:8000") as c:
+        r = c.get("/api/auth/google/start", follow_redirects=False)
+        state = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
+        r = c.get(f"/api/auth/google/callback?code=abc&state={state}", follow_redirects=False)
+        frag = parse_qs(urlparse(r.headers["location"]).fragment)
+        assert sent["code_verifier"] and sent["code"] == "abc"
+        me = c.get("/api/me", headers={"Authorization": f"Bearer {frag['token'][0]}"}).json()
+        assert me["name"] == "Sara Ali" and me["email"] == "sara.ali@gmail.com"
+        assert me["avatar_url"].endswith("photo123") and me["email_verified"] and me["google_linked"]

@@ -6,8 +6,9 @@ import {
   COLORS, PRIORITIES, PROJECT_ICONS, ROLES, avatar, colorSwatches, confirmDialog, debounce, emptyState, errorToast,
   fmtDate, h, icon, menu, mount, openModal, popover, toast,
 } from '../ui.js';
-import { projectShell } from '../components/projectShell.js';
+import { addBoardDialog, isMindmapProject, projectShell } from '../components/projectShell.js';
 
+const BOARD_ONLY = new Set(['sections', 'automations', 'tags']);
 const TABS = [
   ['general', 'settings', 'General'],
   ['members', 'users', 'Members'],
@@ -62,8 +63,11 @@ export default async function render(root, { params }) {
   };
   const isAdmin = () => can('admin');
 
+  const visibleTabs = () => TABS.filter(([k]) => !(isMindmapProject() && BOARD_ONLY.has(k)));
+
   function drawNav() {
-    mount(nav, TABS.map(([k, ic, label]) => h('button', {
+    if (!visibleTabs().some(([k]) => k === tab)) tab = 'general';
+    mount(nav, visibleTabs().map(([k, ic, label]) => h('button', {
       class: ['ps-nav-item', tab === k && 'active', k === 'danger' && 'ps-nav-danger'], 'aria-current': tab === k ? 'page' : null,
       onclick: () => { tab = k; focusSection = null; setQuery({ tab: k, section: null }); drawNav(); draw(); },
     }, icon(ic, 16), label)));
@@ -71,8 +75,12 @@ export default async function render(root, { params }) {
 
   function draw() {
     if (!state.board) return;
+    drawNav();
     const fn = { general, members, sections, automations, tags, danger }[tab];
-    mount(content, fn());
+    const extra = tab === 'general' && isMindmapProject() && isAdmin() ? panel('Board',
+      'This project is a mind map. Add a board to turn topics into tasks and get List, Timeline and Reports. The map stays as it is.',
+      h('button', { class: 'btn btn-secondary', onclick: () => addBoardDialog() }, icon('board', 15), 'Add a board')) : null;
+    mount(content, fn(), extra);
   }
 
   const panel = (title, sub, ...children) => h('section', { class: 'card ps-panel' },

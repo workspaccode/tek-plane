@@ -297,7 +297,7 @@ kbd { font-family: var(--font); font-size: 11px; padding: 1px 6px; border-radius
 .swatch-btn { width: 24px; height: 24px; border-radius: 7px; border: 2px solid transparent; box-shadow: inset 0 0 0 2px rgba(255,255,255,.0); transition: transform .1s; }
 .swatch-btn:hover { transform: scale(1.1); }
 .swatch-btn.active { border-color: var(--text); box-shadow: inset 0 0 0 2px var(--surface); }
-.role-badge { font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 5px; background: var(--surface-3); color: var(--text-2); text-transform: capitalize; }
+.role-badge { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 5px; background: var(--surface-3); color: var(--text-2); text-transform: capitalize; }
 .role-badge.owner { background: var(--warning-soft); color: var(--warning); }
 .role-badge.admin { background: var(--primary-soft); color: var(--primary-text); }
 
@@ -426,3 +426,5 @@ kbd { font-family: var(--font); font-size: 11px; padding: 1px 6px; border-radius
   .auth-page { grid-template-columns: 1fr; }
   .auth-hero { display: none; }
 }
+.avatar { position: relative; overflow: hidden; }
+.avatar-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
