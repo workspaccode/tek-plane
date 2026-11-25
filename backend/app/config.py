@@ -50,6 +50,14 @@ SECRET_KEY = _load_secret()
 # Public URL of the app, used for the Google OAuth redirect. Defaults to the request's own URL.
 BASE_URL = os.environ.get("TEKPLANE_BASE_URL", "").rstrip("/")
 
+# GitHub App (optional, preferred over personal tokens): app ID, its URL name, the private key
+# (.pem file path, relative to the project folder, or the key itself) and the webhook secret.
+GITHUB_APP_ID = os.environ.get("GITHUB_APP_ID", "").strip()
+GITHUB_APP_SLUG = os.environ.get("GITHUB_APP_SLUG", "").strip()
+GITHUB_APP_PRIVATE_KEY_PATH = os.environ.get("GITHUB_APP_PRIVATE_KEY_PATH", "").strip()
+GITHUB_APP_PRIVATE_KEY = os.environ.get("GITHUB_APP_PRIVATE_KEY", "").replace("\\n", "\n").strip()
+GITHUB_WEBHOOK_SECRET = os.environ.get("GITHUB_WEBHOOK_SECRET", "").strip()
+
 # Site admins: comma-separated emails. They get the Admin panel and can't be demoted from it.
 ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get("TEKPLANE_ADMIN_EMAILS", "").split(",") if e.strip()}
 
@@ -62,12 +70,12 @@ SMTP_HOST = os.environ.get("SMTP_HOST", "")
 SMTP_PORT = int(os.environ.get("SMTP_PORT") or "587")
 SMTP_USER = os.environ.get("SMTP_USER", "")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
-SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USER or "tek-plane <no-reply@localhost>")
+SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USER or "6dx <no-reply@localhost>")
 SMTP_SECURITY = os.environ.get("SMTP_SECURITY", "starttls").lower()  # starttls | ssl | none
 
 # Alternative to SMTP: Resend (https://resend.com) HTTP API. Takes precedence when set.
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
-EMAIL_FROM = os.environ.get("EMAIL_FROM", "") or "tek-plane <onboarding@resend.dev>"
+EMAIL_FROM = os.environ.get("EMAIL_FROM", "") or "6dx <onboarding@resend.dev>"
 
 LOGIN_LINK_TTL_MINUTES = 10
 INVITE_LINK_TTL_DAYS = 7

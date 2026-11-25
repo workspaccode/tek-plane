@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from .. import config, mailer
+from .. import config, github_app, mailer
 from .. import models as m
 from ..db import get_db
 from ..realtime import hub
@@ -358,6 +358,14 @@ def system(request: Request, _: m.User = Depends(admin_user), db: Session = Depe
             "redirect_uri": f"{base}/api/auth/google/callback",
         },
         "network": {"base_url": config.BASE_URL or None, "current_url": base},
+        "github_app": {
+            "configured": github_app.configured(),
+            "app_id": config.GITHUB_APP_ID or None,
+            "slug": config.GITHUB_APP_SLUG or None,
+            "key_found": bool(github_app.private_key()),
+            "webhook_url": f"{base}/api/integrations/github/webhook" if config.GITHUB_WEBHOOK_SECRET else None,
+            "connected_repos": _n(db, select(func.count(m.Integration.id)).where(m.Integration.provider == "github")),
+        },
         "admins": [user_out(u) | {"from_config": u.email.lower() in config.ADMIN_EMAILS,
                                   "has_password": bool(u.password_hash)} for u in admins],
         "pending_admin_emails": sorted(config.ADMIN_EMAILS - registered),
@@ -389,9 +397,9 @@ def system(request: Request, _: m.User = Depends(admin_user), db: Session = Depe
 def test_email(body: TestEmailIn, me: m.User = Depends(admin_user)):
     to = (body.to or me.email).strip().lower()
     try:
-        mailer.deliver(to, "tek-plane test email",
-                       "This is a test email from the tek-plane admin panel. Email delivery works.",
-                       "<p>This is a test email from the <b>tek-plane</b> admin panel.</p><p>Email delivery works. ✅</p>")
+        mailer.deliver(to, "6dx test email",
+                       "This is a test email from the 6dx admin panel. Email delivery works.",
+                       "<p>This is a test email from the <b>6dx</b> admin panel.</p><p>Email delivery works. ✅</p>")
     except Exception as exc:  # report the provider's error to the admin
         raise HTTPException(502, f"Sending failed: {mailer._hint(exc)}") from exc
     return {"ok": True, "to": to, "provider": mailer.provider()}

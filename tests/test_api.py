@@ -3,6 +3,9 @@ import tempfile
 import time
 
 os.environ["TEKPLANE_DATA_DIR"] = tempfile.mkdtemp()
+# never use the real GitHub App from .env in tests (real env vars win over .env)
+for _key in ("GITHUB_APP_ID", "GITHUB_APP_SLUG", "GITHUB_APP_PRIVATE_KEY", "GITHUB_APP_PRIVATE_KEY_PATH", "GITHUB_WEBHOOK_SECRET"):
+    os.environ[_key] = ""
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -468,3 +471,233 @@ def test_admin_password_sign_in():
         r = c.post("/api/auth/admin/login", json={"username": "rootadmin", "password": "N3w-password!"})
         assert r.status_code == 429
         auth_router._fails.clear()
+
+
+def test_project_categories_and_integrations(monkeypatch):
+    from backend.app.routers import integrations as integ
+
+    repo = {"full_name": "acme/rocket", "html_url": "https://github.com/acme/rocket", "private": False,
+            "default_branch": "main", "stargazers_count": 7, "forks_count": 2, "language": "Python"}
+    issues = [
+        {"number": 12, "title": "Crash on start", "html_url": "https://github.com/acme/rocket/issues/12", "state": "open",
+         "user": {"login": "sam"}, "labels": [{"name": "bug", "color": "d73a4a"}], "body": "Steps to reproduce…"},
+        {"number": 13, "title": "Dark mode", "html_url": "https://github.com/acme/rocket/issues/13", "state": "open",
+         "user": {"login": "kim"}, "labels": [{"name": "enhancement"}], "body": ""},
+        {"number": 14, "title": "A pull request", "html_url": "https://github.com/acme/rocket/pull/14",
+         "pull_request": {}, "labels": []},
+    ]
+    calls = []
+
+    def fake_github(path, token=None, params=None):
+        calls.append((path, token))
+        if path == "/repos/acme/missing":
+            raise integ.GithubError(404, "Repository not found.")
+        if path == "/repos/acme/rocket":
+            return repo
+        if path.endswith("/pulls"):
+            return [{"number": 20, "title": "Add login", "html_url": "u", "user": {"login": "sam"}, "draft": False,
+                     "head": {"ref": "login"}, "base": {"ref": "main"}}]
+        if path.endswith("/commits"):
+            return [{"sha": "abcdef1234", "commit": {"message": "Fix crash\n\nlong text", "author": {"name": "Sam", "date": "2026-11-20T10:00:00Z"}},
+                     "html_url": "c", "author": {"login": "sam"}}]
+        if path.endswith("/issues"):
+            if (params or {}).get("state") == "closed":
+                return [{"number": 12, "title": "Crash on start"}]
+            return issues
+        raise AssertionError(path)
+
+    sent = []
+    monkeypatch.setattr(integ, "github_request", fake_github)
+    monkeypatch.setattr(integ, "post_webhook", lambda url, payload: sent.append((url, payload)))
+
+    with TestClient(app) as c:
+        h, _ = login(c, "dev@x.io", "Dev")
+        hv, _ = login(c, "viewer@x.io", "Vee")
+
+        # category picks a matching board and tags
+        sw = c.post("/api/projects", json={"name": "Rocket", "template": "software", "category": "software"}, headers=h).json()
+        hw = c.post("/api/projects", json={"name": "Drone", "template": "hardware", "category": "hardware"}, headers=h).json()
+        gen = c.post("/api/projects", json={"name": "Errands"}, headers=h).json()
+        assert (sw["category"], hw["category"], gen["category"]) == ("software", "hardware", "general")
+        board = c.get(f"/api/projects/{sw['id']}", headers=h).json()
+        assert [s["name"] for s in board["sections"]][3] == "Code Review"
+        assert {t["name"] for t in board["tags"]} >= {"Bug", "Feature", "Tech debt"}
+        hw_board = c.get(f"/api/projects/{hw['id']}", headers=h).json()
+        assert "Prototype" in [s["name"] for s in hw_board["sections"]] and "Firmware" in {t["name"] for t in hw_board["tags"]}
+        assert c.post("/api/projects", json={"name": "X", "category": "space"}, headers=h).status_code == 422
+
+        # integrations only for software projects
+        assert c.get(f"/api/projects/{gen['id']}/integrations", headers=h).status_code == 409
+        assert c.patch(f"/api/projects/{gen['id']}", json={"category": "software"}, headers=h).json()["category"] == "software"
+        assert c.get(f"/api/projects/{gen['id']}/integrations", headers=h).status_code == 200
+
+        # connect GitHub (token stored encrypted, never returned)
+        base = f"/api/projects/{sw['id']}"
+        assert c.post(f"{base}/integrations/github", json={"repo": "acme/missing"}, headers=h).status_code == 404
+        assert c.post(f"{base}/integrations/github", json={"repo": "not a repo"}, headers=h).status_code == 422
+        r = c.post(f"{base}/integrations/github", json={"repo": "https://github.com/acme/rocket.git", "token": "ghp_secret123"}, headers=h)
+        assert r.status_code == 200 and r.json()["repo"] == "acme/rocket" and r.json()["has_token"]
+        assert "ghp_secret123" not in r.text and calls[-1] == ("/repos/acme/rocket", "ghp_secret123")
+        from backend.app import models as m
+        from backend.app.db import SessionLocal
+        with SessionLocal() as db:
+            stored = db.query(m.Integration).filter_by(project_id=sw["id"], provider="github").one().secret
+            assert stored and "ghp_secret123" not in stored
+
+        # only admins connect; other members can't see it at all until invited
+        c.post(f"{base}/members", json={"email": "viewer@x.io", "role": "viewer"}, headers=h)
+        assert c.post(f"{base}/integrations/github", json={"repo": "acme/rocket"}, headers=hv).status_code == 403
+        listed = c.get(f"{base}/integrations", headers=hv).json()
+        assert not listed["can_manage"] and "ghp_secret123" not in str(listed)
+
+        ov = c.get(f"{base}/github", headers=h).json()
+        assert ov["repo"]["stars"] == 7 and ov["pulls"][0]["number"] == 20 and ov["commits"][0]["message"] == "Fix crash"
+        assert [i["number"] for i in ov["issues"]] == [12, 13]  # pull requests aren't issues
+
+        # import issues as tasks, labels become tags, no duplicates
+        r = c.post(f"{base}/github/import", json={"numbers": [12, 13, 12]}, headers=h).json()
+        assert r["imported"] == 2
+        t12 = next(t for t in r["tasks"] if t["title"] == "Crash on start")
+        assert t12["external"] == {"provider": "github", "label": "acme/rocket#12", "url": "https://github.com/acme/rocket/issues/12"}
+        tag_names = {t["id"]: t["name"] for t in c.get(f"/api/projects/{sw['id']}", headers=h).json()["tags"]}
+        assert [tag_names[i] for i in t12["tag_ids"]] == ["Bug"]
+        assert c.post(f"{base}/github/import", json={"numbers": [12]}, headers=h).json()["imported"] == 0
+        assert c.get(f"{base}/github", headers=h).json()["issues"][0]["task"]["number"] == t12["number"]
+
+        # closed issue on GitHub completes its task
+        r = c.post(f"{base}/github/sync", headers=h).json()
+        assert r == {"checked": 2, "completed": 1}
+        assert c.get(f"/api/tasks/{t12['id']}", headers=h).json()["status"] == "completed"
+
+        # Slack: URL validated, events chosen, messages sent after changes
+        assert c.post(f"{base}/integrations/slack", json={"url": "https://evil.example.com/hook"}, headers=h).status_code == 422
+        r = c.post(f"{base}/integrations/slack", json={"url": "https://hooks.slack.com/services/T0/B0/abcd1234",
+                                                     "events": ["task.created", "nonsense"]}, headers=h).json()
+        assert r["events"] == ["task.created"] and r["hint"].endswith("1234") and "hooks.slack.com/services/T0" not in r["hint"]
+        sent.clear()
+        board = c.get(f"/api/projects/{sw['id']}", headers=h).json()
+        c.post(f"/api/projects/{sw['id']}/tasks", json={"title": "Ship <it> & celebrate", "section_id": board["sections"][0]["id"]}, headers=h)
+        for _ in range(50):
+            if sent:
+                break
+            time.sleep(0.05)
+        assert sent and sent[0][0] == "https://hooks.slack.com/services/T0/B0/abcd1234"
+        assert "Ship &lt;it&gt; &amp; celebrate" in sent[0][1]["text"] and "*Rocket*" in sent[0][1]["text"]
+
+        # Discord test message, then disconnect
+        d = c.post(f"{base}/integrations/discord", json={"url": "https://discord.com/api/webhooks/123/tok-en"}, headers=h).json()
+        sent.clear()
+        assert c.post(f"{base}/integrations/{d['id']}/test", headers=h).status_code == 200
+        assert sent[0][1]["allowed_mentions"] == {"parse": []}
+        assert c.delete(f"{base}/integrations/{d['id']}", headers=h).status_code == 200
+        assert {i["provider"] for i in c.get(f"{base}/integrations", headers=h).json()["connected"]} == {"github", "slack"}
+
+
+def test_github_app_optional(monkeypatch):
+    import hashlib
+    import hmac
+    import json as _json
+
+    import jwt as pyjwt
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    from backend.app import config, github_app
+    from backend.app.routers import integrations as integ
+
+    # the app's JWT is a real RS256 token signed with its private key
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode()
+    monkeypatch.setattr(config, "GITHUB_APP_ID", "")
+    assert not github_app.configured()
+    monkeypatch.setattr(config, "GITHUB_APP_ID", "4242")
+    monkeypatch.setattr(config, "GITHUB_APP_PRIVATE_KEY", pem)
+    monkeypatch.setattr(config, "GITHUB_APP_SLUG", "tek-plane-app")
+    claims = pyjwt.decode(github_app.app_jwt(), key.public_key(), algorithms=["RS256"])
+    assert claims["iss"] == "4242" and claims["exp"] - claims["iat"] <= 600
+
+    installed = {"acme/rocket": 77}
+    monkeypatch.setattr(github_app, "find_installation", lambda repo: installed.get(repo))
+    monkeypatch.setattr(github_app, "installation_token", lambda inst: f"ghs_inst_{inst}")
+    seen_tokens = []
+
+    def fake_github(path, token=None, params=None):
+        seen_tokens.append(token)
+        if path.startswith("/repos/acme/"):
+            return {"full_name": path[7:], "html_url": f"https://github.com/{path[7:]}", "private": True, "default_branch": "main"}
+        raise AssertionError(path)
+
+    writes = []
+    monkeypatch.setattr(integ, "github_request", fake_github)
+    monkeypatch.setattr(integ, "github_write", lambda method, path, token, body: writes.append((method, path, token, body)) or {})
+    monkeypatch.setattr(config, "GITHUB_WEBHOOK_SECRET", "whsec_test")
+
+    with TestClient(app) as c:
+        h, _ = login(c, "app@x.io", "App Dev")
+        sw = c.post("/api/projects", json={"name": "Rocket", "template": "software", "category": "software"}, headers=h).json()
+        base = f"/api/projects/{sw['id']}"
+        info = c.get(f"{base}/integrations", headers=h).json()["github_app"]
+        assert info["configured"] and info["install_url"] == "https://github.com/apps/tek-plane-app/installations/new"
+        assert info["webhook_url"].endswith("/api/integrations/github/webhook") and info["webhook_ready"]
+
+        # not installed on that repository yet
+        r = c.post(f"{base}/integrations/github", json={"repo": "acme/other"}, headers=h)
+        assert r.status_code == 409 and "isn't installed" in r.json()["detail"]
+        # the GitHub App is the default when set up; installation token is used, nothing is stored
+        r = c.post(f"{base}/integrations/github", json={"repo": "acme/rocket"}, headers=h).json()
+        assert r["auth"] == "app" and not r["has_token"] and r["close_issues"] and seen_tokens[-1] == "ghs_inst_77"
+        # …but it's optional: a personal token (or none) still works
+        r2 = c.post(f"{base}/integrations/github", json={"repo": "acme/rocket", "method": "token", "token": "ghp_x"}, headers=h).json()
+        assert r2["auth"] == "token" and r2["has_token"]
+        r = c.post(f"{base}/integrations/github", json={"repo": "acme/rocket", "method": "app"}, headers=h).json()
+        assert r["auth"] == "app"
+
+        # a task linked to issue #5: completing it closes the issue, reopening reopens it
+        board = c.get(f"/api/projects/{sw['id']}", headers=h).json()
+        monkeypatch.setattr(integ, "github_request", lambda path, token=None, params=None: {
+            "number": 5, "title": "Login fails", "html_url": "https://github.com/acme/rocket/issues/5", "state": "open",
+            "labels": [], "body": ""})
+        task = c.post(f"{base}/github/import", json={"numbers": [5]}, headers=h).json()["tasks"][0]
+
+        def wait_for(n):
+            for _ in range(60):
+                if len(writes) >= n:
+                    return
+                time.sleep(0.05)
+
+        c.patch(f"/api/tasks/{task['id']}", json={"status": "completed"}, headers=h)
+        wait_for(1)
+        assert writes[0] == ("PATCH", "/repos/acme/rocket/issues/5", "ghs_inst_77", {"state": "closed", "state_reason": "completed"})
+        c.patch(f"/api/tasks/{task['id']}", json={"status": "open"}, headers=h)
+        wait_for(2)
+        assert writes[1][3] == {"state": "open"}
+
+        # switching write-back off stops it
+        c.patch(f"{base}/integrations/{r['id']}", json={"close_issues": False, "auto_import": True}, headers=h)
+        c.patch(f"/api/tasks/{task['id']}", json={"status": "completed"}, headers=h)
+        time.sleep(0.4)
+        assert len(writes) == 2
+        c.patch(f"/api/tasks/{task['id']}", json={"status": "open"}, headers=h)
+
+        # webhook: signature checked; closing on GitHub completes the task; new issues auto-import
+        def send(event, payload, secret="whsec_test"):
+            raw = _json.dumps(payload).encode()
+            sig = "sha256=" + hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+            return c.post("/api/integrations/github/webhook", content=raw,
+                          headers={"x-github-event": event, "x-hub-signature-256": sig, "content-type": "application/json"})
+
+        repo = {"full_name": "acme/rocket"}
+        assert send("issues", {"action": "closed", "issue": {"number": 5}, "repository": repo}, secret="wrong").status_code == 401
+        assert send("ping", {}).json()["ok"]
+        assert send("issues", {"action": "closed", "issue": {"number": 5}, "repository": repo}).json()["changed"] == 1
+        t = c.get(f"/api/tasks/{task['id']}", headers=h).json()
+        assert t["status"] == "completed"
+        time.sleep(0.3)
+        assert len(writes) == 2  # no echo back to GitHub
+        acts = c.get(f"/api/projects/{sw['id']}/activity", headers=h).json()
+        assert any(a["action"] == "task.completed" and a["data"].get("via") == "GitHub" for a in acts)
+        new_issue = {"number": 9, "title": "Add 2FA", "html_url": "https://github.com/acme/rocket/issues/9",
+                     "labels": [{"name": "enhancement"}], "body": "Please"}
+        assert send("issues", {"action": "opened", "issue": new_issue, "repository": repo}).json()["changed"] == 1
+        titles = [x["title"] for x in c.get(f"/api/projects/{sw['id']}", headers=h).json()["tasks"]]
+        assert "Add 2FA" in titles

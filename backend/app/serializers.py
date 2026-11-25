@@ -25,6 +25,7 @@ def project_out(p: m.Project, role: str | None = None) -> dict:
         "color": p.color,
         "icon": p.icon,
         "kind": p.kind or "board",
+        "category": p.category or "general",
         "owner_id": p.owner_id,
         "archived": p.archived,
         "created_at": iso(p.created_at),
@@ -95,6 +96,14 @@ def _task_counts(db: Session, task_ids: list[int]) -> dict[int, dict]:
     return counts
 
 
+def external_out(t: m.Task) -> dict | None:
+    """Where an imported task came from, e.g. {"provider": "github", "label": "owner/repo#12", "url": …}."""
+    if not t.external_ref:
+        return None
+    provider, _, label = t.external_ref.partition(":")
+    return {"provider": provider, "label": label, "url": t.external_url}
+
+
 def task_summary(t: m.Task, counts: dict | None = None) -> dict:
     out = {
         "id": t.id,
@@ -115,6 +124,7 @@ def task_summary(t: m.Task, counts: dict | None = None) -> dict:
         "completed_at": iso(t.completed_at),
         "created_at": iso(t.created_at),
         "updated_at": iso(t.updated_at),
+        "external": external_out(t),
         "tag_ids": [tag.id for tag in t.tags],
         "watcher_ids": [u.id for u in t.watchers],
     }

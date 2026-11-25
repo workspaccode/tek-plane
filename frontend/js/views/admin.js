@@ -433,16 +433,24 @@ async function systemTab(el) {
         pill(a.from_config ? 'From .env' : a.has_password ? 'Password' : 'Granted here')))),
       s.pending_admin_emails.length ? h('p', { class: 'hint' }, `Waiting to sign up: ${s.pending_admin_emails.join(', ')}`) : null,
       h('p', { class: 'hint' }, 'Password admins are created with: uv run python -m backend.app.manage create-admin NAME. Email admins can be listed in TEKPLANE_ADMIN_EMAILS in .env, or made admin from the Users tab.')),
+    section('github', 'GitHub App', pill(s.github_app.configured ? 'Ready' : 'Optional', s.github_app.configured ? 'success' : ''),
+      s.github_app.configured
+        ? [row('App', s.github_app.slug ? h('a', { href: `https://github.com/apps/${s.github_app.slug}`, target: '_blank', rel: 'noopener noreferrer' }, s.github_app.slug) : `ID ${s.github_app.app_id}`),
+          row('Webhook', s.github_app.webhook_url ? code(s.github_app.webhook_url) : 'Off (needs a public address)')]
+        : h('p', { class: 'hint' }, s.github_app.app_id && !s.github_app.key_found
+          ? 'GITHUB_APP_ID is set, but the private key file wasn’t found. Check GITHUB_APP_PRIVATE_KEY_PATH.'
+          : 'Software projects can connect GitHub with personal tokens. Add GITHUB_APP_ID and the app’s private key to .env to connect as a GitHub App instead.'),
+      row('Repositories connected', num(s.github_app.connected_repos))),
     section('link', 'Network', null,
       row('This page', s.network.current_url),
       row('Public URL', s.network.base_url || 'Automatic (the address people open)'),
-      h('p', { class: 'hint' }, 'Run ./run.sh --lan to let other devices on your Wi-Fi open tek-plane.')),
+      h('p', { class: 'hint' }, 'Run ./run.sh --lan to let other devices on your Wi-Fi open 6dx.')),
     section('database', 'Storage', null,
       row('Database', s.storage.database_bytes == null ? '—' : fmtBytes(s.storage.database_bytes)),
       row('Uploaded files', `${num(s.storage.uploads_files)} · ${fmtBytes(s.storage.uploads_bytes)}`),
       h('div', { class: 'ad-meta ad-meta-stack' }, h('span', null, 'Data folder'), h('div', { class: 'ad-inline' }, code(s.storage.data_dir), copyBtn(s.storage.data_dir)))),
     section('server', 'Server', pill('Running', 'success', h('span', { class: 'ad-dot' })),
-      row('Version', `tek-plane ${s.runtime.version}`),
+      row('Version', `6dx ${s.runtime.version}`),
       row('Python', s.runtime.python),
       row('System', s.runtime.platform),
       row('Started', fmtDateTime(s.runtime.started_at)),
@@ -517,7 +525,7 @@ export default async function render(root, { query = {} } = {}) {
     h('div', { class: 'page-head' },
       h('div', null,
         h('h1', { class: 'page-title' }, 'Admin'),
-        h('p', { class: 'page-sub' }, 'Members, projects and the health of your tek-plane, in one place.')),
+        h('p', { class: 'page-sub' }, 'Members, projects and the health of your 6dx, in one place.')),
       refreshBtn),
     tabs,
     body));

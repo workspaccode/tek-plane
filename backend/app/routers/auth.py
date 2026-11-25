@@ -302,7 +302,7 @@ def google_start(request: Request, next: str = "/dashboard"):
     if not (config.GOOGLE_CLIENT_ID and config.GOOGLE_CLIENT_SECRET):
         return _fail("Google sign-in is not configured on this server.")
     if not google_available(request):
-        return _fail("Google sign-in works only on the computer running tek-plane. Use an email code here.")
+        return _fail("Google sign-in works only on the computer running 6dx. Use an email code here.")
     state = secrets.token_urlsafe(24)
     verifier = secrets.token_urlsafe(48)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()

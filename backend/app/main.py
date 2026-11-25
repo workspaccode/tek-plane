@@ -10,7 +10,7 @@ from . import models as m
 from .config import FRONTEND_DIR
 from .db import Base, SessionLocal, engine
 from .realtime import hub
-from .routers import admin, auth, mindmaps, personal, projects, sections, tasks
+from .routers import admin, auth, integrations, mindmaps, personal, projects, sections, tasks
 from .security import user_from_token
 
 
@@ -21,6 +21,17 @@ def _migrate() -> None:
     if "projects" in tables and "kind" not in {c["name"] for c in insp.get_columns("projects")}:
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE projects ADD COLUMN kind VARCHAR(20) NOT NULL DEFAULT 'board'"))
+    if "projects" in tables and "category" not in {c["name"] for c in insp.get_columns("projects")}:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE projects ADD COLUMN category VARCHAR(20) NOT NULL DEFAULT 'general'"))
+    if "tasks" in tables:
+        task_cols = {c["name"] for c in insp.get_columns("tasks")}
+        with engine.begin() as conn:
+            if "external_url" not in task_cols:
+                conn.execute(text("ALTER TABLE tasks ADD COLUMN external_url VARCHAR(500)"))
+            if "external_ref" not in task_cols:
+                conn.execute(text("ALTER TABLE tasks ADD COLUMN external_ref VARCHAR(160)"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_external_ref ON tasks (external_ref)"))
     if "mind_maps" in tables and "settings" not in {c["name"] for c in insp.get_columns("mind_maps")}:
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE mind_maps ADD COLUMN settings JSON"))
@@ -52,9 +63,9 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="tek-plane", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="6dx", version="0.1.0", lifespan=lifespan)
 
-for r in (auth, projects, sections, tasks, mindmaps, personal, admin):
+for r in (auth, projects, sections, tasks, mindmaps, personal, admin, integrations):
     app.include_router(r.router)
 
 

@@ -29,6 +29,7 @@ defineRoutes([
   { path: '/projects/:id/reports', load: view('./views/reports.js'), nav: 'project' },
   { path: '/projects/:id/activity', load: view('./views/activity.js'), nav: 'project' },
   { path: '/projects/:id/mindmap', load: view('./views/mindmap.js'), nav: 'project' },
+  { path: '/projects/:id/integrations', load: view('./views/integrations.js'), nav: 'project' },
   { path: '/projects/:id/settings', load: view('./views/projectSettings.js'), nav: 'project' },
 ], { load: null, notFound: true });
 
@@ -78,7 +79,7 @@ function renderSidebar(activeNav, activeProjectId) {
 
   mount(shell.sidebar,
     h('a', { href: '/dashboard', class: 'brand', style: { textDecoration: 'none' } },
-      h('span', { class: 'brand-mark' }, icon('layers', 16)), 'tek-plane'),
+      h('span', { class: 'brand-mark' }, icon('layers', 16)), '6dx'),
     h('div', { class: 'side-scroll' },
       navItem('/dashboard', 'home', 'Dashboard', 'dashboard'),
       navItem('/tasks', 'check-circle', 'My Tasks', 'tasks'),

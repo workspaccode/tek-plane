@@ -68,7 +68,7 @@ export default async function render(root, { mode }) {
     });
     mount(panel,
       h('div', { class: 'auth-logo' }, h('span', { class: 'brand-mark' }, icon('layers', 18))),
-      h('h2', null, 'Sign in to tek-plane'),
+      h('h2', null, 'Sign in to 6dx'),
       h('p', { class: 'page-sub' }, 'New here? Signing in creates your account.'),
       googleHref() ? [
         h('a', { class: 'btn btn-google btn-lg btn-block', href: googleHref() },
@@ -79,7 +79,7 @@ export default async function render(root, { mode }) {
       h('p', { class: 'auth-fine' }, 'We’ll email you a 6-digit code and a one-click link. No password needed.'),
       h('a', { class: 'auth-admin-link', href: '/admin/login' }, icon('shield', 12), 'Administrator sign-in'),
       cfg.google_configured && !googleHref() ? h('p', { class: 'auth-fine auth-note' }, icon('globe', 13),
-        'Google sign-in works on the computer running tek-plane. On this device, continue with your email.') : null);
+        'Google sign-in works on the computer running 6dx. On this device, continue with your email.') : null);
     setTimeout(() => input.focus(), 0);
   }
 
@@ -253,12 +253,12 @@ export default async function render(root, { mode }) {
 
   root.appendChild(h('div', { class: 'auth-page' },
     h('section', { class: 'auth-hero' },
-      h('div', { class: 'brand', style: { padding: 0 } }, h('span', { class: 'brand-mark' }, icon('layers', 16)), 'tek-plane'),
+      h('div', { class: 'brand', style: { padding: 0 } }, h('span', { class: 'brand-mark' }, icon('layers', 16)), '6dx'),
       h('div', null,
         h('h1', null, 'Plan, map and ship work together.'),
         h('p', null, 'Kanban boards, mind maps, automations, time tracking and a personal agenda, in one calm place.'),
         h('div', { class: 'hero-board', 'aria-hidden': 'true' }, col('#8792a2', 3), col('#3d6bff', 2), col('#f5a623', 3), col('#2fb67c', 1))),
-      h('p', { style: { fontSize: '13px', opacity: 0.6 } }, '© tek-plane')),
+      h('p', { style: { fontSize: '13px', opacity: 0.6 } }, '© 6dx')),
     h('section', { class: 'auth-panel' }, panel)));
   if (mode === 'admin') stepAdmin(hashError);
   else if (callbackUser) stepName(callbackUser);

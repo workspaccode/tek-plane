@@ -1,4 +1,4 @@
-# tek-plane
+# 6dx
 
 Collaborative task management: Kanban boards, mind maps, automations, time tracking and a personal agenda.
 
