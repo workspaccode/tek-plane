@@ -50,6 +50,9 @@ SECRET_KEY = _load_secret()
 # Public URL of the app, used for the Google OAuth redirect. Defaults to the request's own URL.
 BASE_URL = os.environ.get("TEKPLANE_BASE_URL", "").rstrip("/")
 
+# Site admins: comma-separated emails. They get the Admin panel and can't be demoted from it.
+ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get("TEKPLANE_ADMIN_EMAILS", "").split(",") if e.strip()}
+
 # Google sign-in (create an OAuth client of type "Web application" in Google Cloud Console)
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")

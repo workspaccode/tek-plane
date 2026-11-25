@@ -1,5 +1,6 @@
 import os
 import tempfile
+import time
 
 os.environ["TEKPLANE_DATA_DIR"] = tempfile.mkdtemp()
 
@@ -347,3 +348,123 @@ def test_google_signup_takes_name_photo_email(monkeypatch):
         me = c.get("/api/me", headers={"Authorization": f"Bearer {frag['token'][0]}"}).json()
         assert me["name"] == "Sara Ali" and me["email"] == "sara.ali@gmail.com"
         assert me["avatar_url"].endswith("photo123") and me["email_verified"] and me["google_linked"]
+
+
+def skip_resend_wait(email):
+    """Age earlier codes so the 30-second resend limit doesn't block the next request."""
+    from backend.app import models as m
+    from backend.app.db import SessionLocal
+    with SessionLocal() as db:
+        for otp in db.query(m.OtpCode).filter(m.OtpCode.email == email):
+            otp.created_at = otp.created_at.replace(year=2000)
+        db.commit()
+
+
+def test_admin_panel(monkeypatch):
+    from backend.app import config
+    monkeypatch.setattr(config, "ADMIN_EMAILS", {"boss@x.io"})
+    with TestClient(app) as c:
+        hb, boss = login(c, "boss@x.io", "Boss")
+        hu, user = login(c, "user@x.io", "User")
+        assert boss["is_admin"] and not user["is_admin"]
+        # regular users are kept out
+        for path in ("/api/admin/overview", "/api/admin/users", "/api/admin/projects", "/api/admin/activity",
+                     "/api/admin/system"):
+            assert c.get(path, headers=hu).status_code == 403
+            assert c.get(path, headers=hb).status_code == 200, path
+
+        p = c.post("/api/projects", json={"name": "Side quest", "template": "kanban"}, headers=hu).json()
+        ov = c.get("/api/admin/overview", headers=hb).json()
+        assert ov["users"]["total"] >= 2 and ov["users"]["admins"] >= 1 and len(ov["signups"]) == 30
+        users = c.get("/api/admin/users?q=user@x.io", headers=hb).json()
+        assert [u["email"] for u in users] == ["user@x.io"] and users[0]["owned_projects"] == 1
+        assert users[0]["last_login_at"] and users[0]["last_seen_at"]
+        detail = c.get(f"/api/admin/users/{user['id']}", headers=hb).json()
+        assert detail["project_list"][0]["role"] == "owner" and detail["activity"]
+        assert any(x["id"] == p["id"] and not x["is_member"] for x in c.get("/api/admin/projects", headers=hb).json())
+
+        # guard rails
+        assert c.patch(f"/api/admin/users/{boss['id']}", json={"disabled": True}, headers=hb).status_code == 400
+        assert c.patch(f"/api/admin/users/{boss['id']}", json={"is_admin": False}, headers=hb).status_code == 400
+
+        # promote, then demote a regular user
+        assert c.patch(f"/api/admin/users/{user['id']}", json={"is_admin": True}, headers=hb).json()["is_admin"]
+        assert c.get("/api/admin/overview", headers=hu).status_code == 200
+        c.patch(f"/api/admin/users/{user['id']}", json={"is_admin": False}, headers=hb)
+
+        # sign out everywhere: the old token stops working, a new sign-in works
+        assert c.post(f"/api/admin/users/{user['id']}/signout", headers=hb).status_code == 200
+        assert c.get("/api/me", headers=hu).status_code == 401
+        time.sleep(1.1)  # sessions are revoked by the second
+        skip_resend_wait("user@x.io")
+        hu, _ = login(c, "user@x.io")
+        assert c.get("/api/me", headers=hu).status_code == 200
+
+        # suspend: existing session dies and signing in is refused
+        assert c.patch(f"/api/admin/users/{user['id']}", json={"disabled": True}, headers=hb).json()["disabled"]
+        assert c.get("/api/me", headers=hu).status_code == 401
+        skip_resend_wait("user@x.io")
+        r = c.post("/api/auth/otp/request", json={"email": "user@x.io"})
+        assert r.status_code == 403 and "suspended" in r.json()["detail"]
+        c.patch(f"/api/admin/users/{user['id']}", json={"disabled": False}, headers=hb)
+
+        # admin can delete any project
+        assert c.delete(f"/api/admin/projects/{p['id']}", headers=hb).status_code == 200
+        assert c.get(f"/api/projects/{p['id']}", headers=hb).status_code == 404
+
+
+def test_admin_password_sign_in():
+    from backend.app.manage import create_admin
+    from backend.app.passwords import hash_password, verify_password
+    from backend.app.routers import auth as auth_router
+
+    stored = hash_password("Correct-horse-9")
+    assert stored.startswith("scrypt$") and "Correct-horse-9" not in stored
+    assert verify_password("Correct-horse-9", stored) and not verify_password("wrong", stored)
+
+    auth_router._fails.clear()
+    with TestClient(app) as c:
+        admin = create_admin("rootadmin", "Sup3r-secret!", name="Root Admin")
+        assert admin.email == "rootadmin@admin.invalid"
+
+        # wrong password, unknown user: same generic answer
+        r = c.post("/api/auth/admin/login", json={"username": "rootadmin", "password": "nope"})
+        assert r.status_code == 401 and "Wrong username or password" in r.json()["detail"]
+        assert c.post("/api/auth/admin/login", json={"username": "ghost", "password": "x"}).status_code == 401
+
+        r = c.post("/api/auth/admin/login", json={"username": "RootAdmin", "password": "Sup3r-secret!"})
+        assert r.status_code == 200, r.text
+        h = {"Authorization": f"Bearer {r.json()['token']}"}
+        me = c.get("/api/me", headers=h).json()
+        assert me["is_admin"] and me["has_password"] and me["email_placeholder"] and me["username"] == "rootadmin"
+        assert c.get("/api/admin/overview", headers=h).status_code == 200
+
+        # the placeholder email can't be used for email codes, and nothing is emailed to it
+        assert c.post("/api/auth/otp/request", json={"email": "rootadmin@admin.invalid"}).status_code == 422
+
+        # regular accounts have no password sign-in
+        login(c, "plain@x.io")
+        assert c.post("/api/auth/admin/login", json={"username": "plain@x.io", "password": "anything12"}).status_code == 401
+
+        # protected: can't be suspended or demoted from the panel, even by another admin
+        r = c.patch(f"/api/admin/users/{admin.id}", json={"disabled": True}, headers=h)
+        assert r.status_code == 400
+
+        # change password: weak and wrong-current are refused, success signs out other sessions
+        other = c.post("/api/auth/admin/login", json={"username": "rootadmin", "password": "Sup3r-secret!"}).json()["token"]
+        assert c.post("/api/me/password", json={"current": "bad", "new": "N3w-password!"}, headers=h).status_code == 400
+        assert c.post("/api/me/password", json={"current": "Sup3r-secret!", "new": "short"}, headers=h).status_code == 422
+        time.sleep(1.1)
+        r = c.post("/api/me/password", json={"current": "Sup3r-secret!", "new": "N3w-password!"}, headers=h)
+        assert r.status_code == 200
+        assert c.get("/api/me", headers={"Authorization": f"Bearer {r.json()['token']}"}).status_code == 200
+        assert c.get("/api/me", headers={"Authorization": f"Bearer {other}"}).status_code == 401
+        assert c.post("/api/auth/admin/login", json={"username": "rootadmin", "password": "Sup3r-secret!"}).status_code == 401
+
+        # lockout after 5 failures, even with the right password
+        auth_router._fails.clear()
+        for _ in range(5):
+            c.post("/api/auth/admin/login", json={"username": "rootadmin", "password": "wrong-one"})
+        r = c.post("/api/auth/admin/login", json={"username": "rootadmin", "password": "N3w-password!"})
+        assert r.status_code == 429
+        auth_router._fails.clear()

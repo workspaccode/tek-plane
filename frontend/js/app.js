@@ -5,7 +5,7 @@ import {
   emit, loadBoard, loadPinned, loadProjects, loadTimer, on, removeBoardTask, state, upsertBoardTask,
 } from './store.js';
 import {
-  avatar, clear, debounce, emptyState, errorToast, fmtDuration, h, icon, menu, mount, openModal, spinner, toast,
+  avatar, clear, debounce, userHandle, emptyState, errorToast, fmtDuration, h, icon, menu, mount, openModal, spinner, toast,
 } from './ui.js';
 
 const view = (path) => () => import(path);
@@ -14,12 +14,14 @@ defineRoutes([
   { path: '/login', load: view('./views/auth.js'), public: true, props: { mode: 'login' } },
   { path: '/register', redirect: '/login' },
   { path: '/auth/callback', load: view('./views/auth.js'), public: true, props: { mode: 'callback' } },
+  { path: '/admin/login', load: view('./views/auth.js'), public: true, props: { mode: 'admin' } },
   { path: '/', redirect: '/dashboard' },
   { path: '/dashboard', load: view('./views/dashboard.js'), nav: 'dashboard' },
   { path: '/tasks', load: view('./views/mytasks.js'), nav: 'tasks' },
   { path: '/agenda', load: view('./views/agenda.js'), nav: 'agenda' },
   { path: '/time', load: view('./views/time.js'), nav: 'time' },
   { path: '/profile', load: view('./views/profile.js'), nav: 'profile' },
+  { path: '/admin', load: view('./views/admin.js'), nav: 'admin' },
   { path: '/projects', load: view('./views/projects.js'), nav: 'projects' },
   { path: '/projects/:id', load: view('./views/projectHome.js'), nav: 'project' },
   { path: '/projects/:id/list', load: view('./views/list.js'), nav: 'project' },
@@ -71,7 +73,7 @@ function renderSidebar(activeNav, activeProjectId) {
   const u = state.user;
   const userBtn = h('button', { class: 'user-chip', onclick: (e) => openUserMenu(e.currentTarget) },
     avatar(u, 30),
-    h('div', { class: 'grow' }, h('div', { class: 'name truncate' }, u.name), h('div', { class: 'email truncate' }, u.email)),
+    h('div', { class: 'grow' }, h('div', { class: 'name truncate' }, u.name), h('div', { class: 'email truncate' }, userHandle(u))),
     icon('more', 16));
 
   mount(shell.sidebar,
@@ -82,6 +84,7 @@ function renderSidebar(activeNav, activeProjectId) {
       navItem('/tasks', 'check-circle', 'My Tasks', 'tasks'),
       navItem('/agenda', 'pin', 'Agenda', 'agenda'),
       navItem('/time', 'clock', 'Time Tracking', 'time'),
+      u.is_admin ? navItem('/admin', 'shield', 'Admin', 'admin') : null,
       h('div', { class: 'side-label' },
         h('a', { href: '/projects', class: ['side-label-link', activeNav === 'projects' && 'active'] }, 'Projects'),
         h('button', { title: 'New project', 'aria-label': 'New project', onclick: newProject }, icon('plus', 15))),
@@ -101,6 +104,7 @@ function openUserMenu(anchor) {
     || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   menu(anchor, [
     { label: 'Profile & settings', icon: 'user', onClick: () => navigate('/profile') },
+    state.user?.is_admin ? { label: 'Admin panel', icon: 'shield', onClick: () => navigate('/admin') } : null,
     { label: theme === 'dark' ? 'Light mode' : 'Dark mode', icon: theme === 'dark' ? 'sun' : 'moon', onClick: toggleTheme },
     { label: 'Keyboard shortcuts', icon: 'keyboard', hint: '?', onClick: showShortcuts },
     'divider',
@@ -296,6 +300,10 @@ on('ws', (msg) => {
   const b = state.board;
   const onBoard = b && msg.project_id === b.project.id;
   switch (msg.type) {
+    case 'session.revoked':
+      logout();
+      toast(msg.data?.reason === 'suspended' ? 'Your account has been suspended.' : 'You were signed out by an administrator.', 'error');
+      return;
     case 'task.created':
     case 'task.updated':
       if (onBoard && msg.data.task) upsertBoardTask(msg.data.task);

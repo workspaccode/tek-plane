@@ -10,7 +10,7 @@ from . import models as m
 from .config import FRONTEND_DIR
 from .db import Base, SessionLocal, engine
 from .realtime import hub
-from .routers import auth, mindmaps, personal, projects, sections, tasks
+from .routers import admin, auth, mindmaps, personal, projects, sections, tasks
 from .security import user_from_token
 
 
@@ -34,6 +34,14 @@ def _migrate() -> None:
                 conn.execute(text("ALTER TABLE users ADD COLUMN avatar_url VARCHAR(500)"))
             if "email_verified" not in cols:
                 conn.execute(text("ALTER TABLE users ADD COLUMN email_verified BOOLEAN NOT NULL DEFAULT 0"))
+            for col, ddl in (("is_admin", "BOOLEAN NOT NULL DEFAULT 0"), ("disabled", "BOOLEAN NOT NULL DEFAULT 0"),
+                             ("last_seen_at", "DATETIME"), ("last_login_at", "DATETIME"),
+                             ("sessions_revoked_at", "DATETIME")):
+                if col not in cols:
+                    conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} {ddl}"))
+            if "username" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN username VARCHAR(60)"))
+                conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_username ON users (username)"))
 
 
 @asynccontextmanager
@@ -46,7 +54,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="tek-plane", version="0.1.0", lifespan=lifespan)
 
-for r in (auth, projects, sections, tasks, mindmaps, personal):
+for r in (auth, projects, sections, tasks, mindmaps, personal, admin):
     app.include_router(r.router)
 
 

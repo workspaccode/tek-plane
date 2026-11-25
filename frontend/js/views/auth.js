@@ -6,9 +6,9 @@ import { h, icon, mount } from '../ui.js';
 
 const GOOGLE_LOGO = '<svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>';
 
-function nextPath() {
+function nextPath(fallback = '/dashboard') {
   const n = new URLSearchParams(location.search).get('next');
-  return n && n.startsWith('/') && !n.startsWith('//') ? n : '/dashboard';
+  return n && n.startsWith('/') && !n.startsWith('//') ? n : fallback;
 }
 
 export default async function render(root, { mode }) {
@@ -77,6 +77,7 @@ export default async function render(root, { mode }) {
       ] : null,
       form,
       h('p', { class: 'auth-fine' }, 'We’ll email you a 6-digit code and a one-click link. No password needed.'),
+      h('a', { class: 'auth-admin-link', href: '/admin/login' }, icon('shield', 12), 'Administrator sign-in'),
       cfg.google_configured && !googleHref() ? h('p', { class: 'auth-fine auth-note' }, icon('globe', 13),
         'Google sign-in works on the computer running tek-plane. On this device, continue with your email.') : null);
     setTimeout(() => input.focus(), 0);
@@ -172,6 +173,56 @@ export default async function render(root, { mode }) {
     setTimeout(() => boxes[0].focus(), 0);
   }
 
+  function stepAdmin(initialError) {
+    const user = h('input', {
+      class: 'input input-lg', id: 'f-user', autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false',
+      placeholder: 'Username', required: true,
+    });
+    const pass = h('input', { class: 'input input-lg', id: 'f-pass', type: 'password', autocomplete: 'current-password', placeholder: 'Password', required: true });
+    const reveal = h('button', { class: 'icon-btn auth-reveal', type: 'button', 'aria-label': 'Show password', 'aria-pressed': 'false' }, icon('eye', 16));
+    reveal.addEventListener('click', () => {
+      const show = pass.type === 'password';
+      pass.type = show ? 'text' : 'password';
+      reveal.setAttribute('aria-pressed', String(show));
+      reveal.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+      mount(reveal, icon(show ? 'eye-off' : 'eye', 16));
+      pass.focus();
+    });
+    const err = errorBox(initialError);
+    const btn = h('button', { class: 'btn btn-primary btn-lg btn-block', type: 'submit' }, 'Sign in');
+    const form = h('form', { novalidate: true },
+      h('div', { class: 'field' }, h('label', { class: 'label', for: 'f-user' }, 'Username'), user),
+      h('div', { class: 'field' }, h('label', { class: 'label', for: 'f-pass' }, 'Password'), h('div', { class: 'auth-pass' }, pass, reveal)),
+      err, btn);
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      err.textContent = '';
+      if (!user.value.trim()) { err.textContent = 'Enter your username.'; user.focus(); return; }
+      if (!pass.value) { err.textContent = 'Enter your password.'; pass.focus(); return; }
+      btn.disabled = true;
+      btn.textContent = 'Signing in…';
+      try {
+        const res = await api.post('/auth/admin/login', { username: user.value.trim(), password: pass.value });
+        setToken(res.token);
+        state.user = null;
+        navigate(nextPath('/admin'), { replace: true });
+      } catch (ex) {
+        err.textContent = ex.message;
+        btn.disabled = false;
+        btn.textContent = 'Sign in';
+        pass.value = '';
+        pass.focus();
+      }
+    });
+    mount(panel,
+      h('div', { class: 'auth-logo' }, h('span', { class: 'brand-mark' }, icon('shield', 18))),
+      h('h2', null, 'Administrator sign-in'),
+      h('p', { class: 'page-sub' }, 'For site admins. Everyone else signs in with email or Google.'),
+      form,
+      h('a', { class: 'auth-admin-link', href: '/login' }, icon('chevron-left', 12), 'Back to regular sign-in'));
+    setTimeout(() => user.focus(), 0);
+  }
+
   function stepName(user) {
     const input = h('input', { class: 'input input-lg', id: 'f-name', autocomplete: 'name', placeholder: 'Your full name', value: '', maxlength: 120 });
     const err = errorBox();
@@ -209,7 +260,8 @@ export default async function render(root, { mode }) {
         h('div', { class: 'hero-board', 'aria-hidden': 'true' }, col('#8792a2', 3), col('#3d6bff', 2), col('#f5a623', 3), col('#2fb67c', 1))),
       h('p', { style: { fontSize: '13px', opacity: 0.6 } }, '© tek-plane')),
     h('section', { class: 'auth-panel' }, panel)));
-  if (callbackUser) stepName(callbackUser);
+  if (mode === 'admin') stepAdmin(hashError);
+  else if (callbackUser) stepName(callbackUser);
   else stepEmail(hashError);
   return () => clearInterval(resendTimer);
 }
