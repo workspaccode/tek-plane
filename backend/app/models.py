@@ -25,12 +25,18 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(120))
-    password_hash: Mapped[str] = mapped_column(String(255), default="")  # unused: login is Google or email code
+    username: Mapped[str | None] = mapped_column(String(60), unique=True, nullable=True)  # admin password sign-in
+    password_hash: Mapped[str] = mapped_column(String(255), default="")  # scrypt; only admin accounts have one
     google_sub: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)  # e.g. Google profile photo
     email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     avatar_color: Mapped[str] = mapped_column(String(20), default="#4f7cff")
     title: Mapped[str] = mapped_column(String(120), default="")
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)  # site admin (also TEKPLANE_ADMIN_EMAILS)
+    disabled: Mapped[bool] = mapped_column(Boolean, default=False)  # suspended by an admin: can't sign in
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    sessions_revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # older tokens are rejected
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 

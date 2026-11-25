@@ -29,6 +29,16 @@ Copy `.env.example` to `.env`, fill in **one** email option and (optionally) Goo
 
 Without an email option, codes and links are printed in the server terminal (development mode), and the sign-in page says so.
 
+Change the password after your first sign-in: it's written in plain text in this conversation. Go to Profile & settings, then the Password card. Changing it also signs out any other device.
+
+If you forget the password, reset it from the terminal. It asks for the password hidden and doesn't store it in history:
+
+
+uv run python -m backend.app.manage set-password mahhafez
+The same tool can create more admins (create-admin) and list them all (list-admins).
+
+
+
 ## Features
 
 - **Project types** (chosen when creating): **Board** (default) or **Mind map**, where the whole project is one map that opens straight into the canvas, with only Mind Map / Activity / Settings. A mind map project can get a board later (*Add a board*); the map stays and topics can then become tasks. Renaming the central topic renames the project and vice versa.

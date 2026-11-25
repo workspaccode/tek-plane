@@ -351,6 +351,11 @@ kbd { border-radius: 6px; background: var(--surface-3); border-color: transparen
 .auth-divider { display: flex; align-items: center; gap: 12px; margin: 18px 0; color: var(--text-3); font-size: 12px; }
 .auth-divider::before, .auth-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
 .auth-fine { margin-top: 14px; color: var(--text-3); font-size: 12.5px; text-align: center; }
+.auth-admin-link { display: flex; align-items: center; justify-content: center; gap: 5px; margin-top: 18px; font-size: 12px; color: var(--text-3); text-decoration: none; }
+.auth-admin-link:hover { color: var(--text-2); }
+.auth-pass { position: relative; }
+.auth-pass .input { padding-right: 46px; }
+.auth-reveal { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); color: var(--text-3); }
 .auth-note { display: flex; gap: 6px; align-items: flex-start; justify-content: center; margin-top: 8px; }
 .auth-note svg { flex: none; margin-top: 2px; }
 .auth-callout { display: flex; gap: 8px; align-items: flex-start; padding: 10px 12px; margin-bottom: 16px; border-radius: 12px; background: var(--warning-soft); color: var(--text-2); font-size: 13px; line-height: 1.45; }

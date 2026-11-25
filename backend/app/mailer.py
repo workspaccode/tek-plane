@@ -81,6 +81,8 @@ def _send_resend(to: str, subject: str, text: str, html: str | None) -> None:
 
 def deliver(to: str, subject: str, text: str, html: str | None = None) -> None:
     """Send now (blocking). Raises on failure."""
+    if to.lower().endswith(".invalid"):
+        return  # admin accounts without a real email address
     kind = provider()
     if kind == "resend":
         _send_resend(to, subject, text, html)
@@ -92,6 +94,8 @@ def deliver(to: str, subject: str, text: str, html: str | None = None) -> None:
 
 def send_email(to: str, subject: str, text: str, html: str | None = None) -> None:
     """Send in the background so requests stay fast; failures are logged with a hint."""
+    if to.lower().endswith(".invalid"):
+        return
     if not email_configured():
         deliver(to, subject, text, html)
         return

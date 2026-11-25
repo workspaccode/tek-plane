@@ -14,7 +14,7 @@ def user_out(u: m.User | None) -> dict | None:
     if not u:
         return None
     return {"id": u.id, "name": u.name, "email": u.email, "avatar_color": u.avatar_color, "title": u.title,
-            "avatar_url": u.avatar_url, "email_verified": bool(u.email_verified)}
+            "avatar_url": u.avatar_url, "email_verified": bool(u.email_verified), "username": u.username}
 
 
 def project_out(p: m.Project, role: str | None = None) -> dict:

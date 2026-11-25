@@ -5,6 +5,9 @@ import hashlib
 import hmac
 import re
 import secrets
+import threading
+import time
+from collections import defaultdict
 from datetime import timedelta
 from urllib.parse import quote, urlencode, urlsplit
 
@@ -19,7 +22,8 @@ from sqlalchemy.orm import Session
 from .. import config, mailer
 from .. import models as m
 from ..db import get_db
-from ..security import create_token, current_user
+from ..passwords import dummy_hash, hash_password, is_placeholder_email, password_problem, verify_password
+from ..security import create_token, current_user, is_admin
 from ..serializers import user_out
 from ..services import get_or_create_user
 
@@ -43,6 +47,16 @@ class OtpVerifyIn(BaseModel):
     code: str = Field(min_length=4, max_length=12)
 
 
+class AdminLoginIn(BaseModel):
+    username: str = Field(min_length=1, max_length=255)
+    password: str = Field(min_length=1, max_length=256)
+
+
+class PasswordChangeIn(BaseModel):
+    current: str = Field(max_length=256)
+    new: str = Field(max_length=256)
+
+
 class MePatch(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=120)
     title: str | None = Field(None, max_length=120)
@@ -51,7 +65,7 @@ class MePatch(BaseModel):
 
 def _normalize_email(raw: str) -> str:
     email = raw.strip().lower()
-    if not EMAIL_RE.match(email):
+    if not EMAIL_RE.match(email) or is_placeholder_email(email):
         raise HTTPException(422, "Enter a valid email address")
     return email
 
@@ -70,6 +84,20 @@ def issue_link(db: Session, request: Request, email: str, purpose: str, ttl: tim
     db.add(m.EmailLink(email=email, token_hash=hashlib.sha256(token.encode()).hexdigest(), purpose=purpose,
                        next_path=next_path, expires_at=m.utcnow() + ttl))
     return f"{public_base(request)}/api/auth/link/{token}"
+
+
+SUSPENDED = "This account has been suspended. Contact the administrator."
+
+
+def _session(user: m.User) -> str:
+    """Record the sign-in and return a new session token."""
+    user.last_login_at = m.utcnow()
+    return create_token(user.id)
+
+
+def me_out(user: m.User) -> dict:
+    return {**user_out(user), "google_linked": bool(user.google_sub), "is_admin": is_admin(user),
+            "has_password": bool(user.password_hash), "email_placeholder": is_placeholder_email(user.email)}
 
 
 def _needs_name(user: m.User) -> bool:
@@ -113,6 +141,8 @@ def auth_config(request: Request):
 @router.post("/auth/otp/request")
 def request_code(body: OtpRequestIn, request: Request, db: Session = Depends(get_db)):
     email = _normalize_email(body.email)
+    if db.scalar(select(m.User.disabled).where(m.User.email == email)):
+        raise HTTPException(403, SUSPENDED)
     now = m.utcnow()
     recent = db.scalars(select(m.OtpCode).where(
         m.OtpCode.email == email, m.OtpCode.created_at >= now - timedelta(hours=1)
@@ -154,9 +184,13 @@ def verify_code(body: OtpVerifyIn, db: Session = Depends(get_db)):
                             "Wrong code. Request a new one.")
     otp.consumed = True
     user, is_new = get_or_create_user(db, email)
+    if user.disabled:
+        db.commit()
+        raise HTTPException(403, SUSPENDED)
     user.email_verified = True
+    token = _session(user)
     db.commit()
-    return {"token": create_token(user.id), "user": user_out(user), "is_new": is_new or _needs_name(user)}
+    return {"token": token, "user": user_out(user), "is_new": is_new or _needs_name(user)}
 
 
 @router.get("/auth/link/{token}")
@@ -169,14 +203,87 @@ def open_link(token: str, db: Session = Depends(get_db)):
         return _fail("This link has expired. Request a new code to sign in.")
     link.used_at = m.utcnow()
     user, created = get_or_create_user(db, link.email)
+    if user.disabled:
+        db.commit()
+        return _fail(SUSPENDED)
     user.email_verified = True
     # the matching code can't be used any more either
     for otp in db.scalars(select(m.OtpCode).where(m.OtpCode.email == link.email, m.OtpCode.consumed.is_(False))):
         otp.consumed = True
     db.commit()
     new = "1" if created or _needs_name(user) else "0"
-    return RedirectResponse(f"/auth/callback#token={quote(create_token(user.id))}&next={quote(link.next_path)}&new={new}",
+    token = _session(user)
+    db.commit()
+    return RedirectResponse(f"/auth/callback#token={quote(token)}&next={quote(link.next_path)}&new={new}",
                             status_code=302)
+
+
+# ---------------------------------------------------------------- admin password sign-in
+
+LOCK_SECONDS = 15 * 60
+MAX_FAILS_PER_ACCOUNT = 5
+MAX_FAILS_PER_IP = 20
+_fails: dict[str, list[float]] = defaultdict(list)
+_fails_lock = threading.Lock()
+
+
+def _fail_count(key: str) -> int:
+    now = time.monotonic()
+    with _fails_lock:
+        recent = [t for t in _fails.get(key, []) if now - t < LOCK_SECONDS]
+        if recent:
+            _fails[key] = recent
+        else:
+            _fails.pop(key, None)
+        return len(recent)
+
+
+def _record_fail(*keys: str) -> None:
+    with _fails_lock:
+        for key in keys:
+            _fails[key].append(time.monotonic())
+
+
+@router.post("/auth/admin/login")
+def admin_login(body: AdminLoginIn, request: Request, db: Session = Depends(get_db)):
+    """Username (or email) + password, for admin accounts only. Locks after repeated failures."""
+    login = body.username.strip().lower()
+    ip = request.client.host if request.client else "unknown"
+    account_key, ip_key = f"account:{login}", f"ip:{ip}"
+    if _fail_count(account_key) >= MAX_FAILS_PER_ACCOUNT or _fail_count(ip_key) >= MAX_FAILS_PER_IP:
+        raise HTTPException(429, "Too many failed attempts. Try again in 15 minutes.")
+    user = db.scalar(select(m.User).where(or_(func.lower(m.User.username) == login, func.lower(m.User.email) == login)))
+    stored = user.password_hash if user and user.password_hash else dummy_hash()
+    if not (verify_password(body.password, stored) and user and user.password_hash and is_admin(user)):
+        _record_fail(account_key, ip_key)
+        left = MAX_FAILS_PER_ACCOUNT - _fail_count(account_key)
+        raise HTTPException(401, "Wrong username or password." + (f" {left} attempt{'s' if left != 1 else ''} left." if left <= 2 else ""))
+    if user.disabled:
+        raise HTTPException(403, SUSPENDED)
+    with _fails_lock:
+        _fails.pop(account_key, None)
+    token = _session(user)
+    db.commit()
+    return {"token": token, "user": me_out(user)}
+
+
+@router.post("/me/password")
+def change_password(body: PasswordChangeIn, user: m.User = Depends(current_user), db: Session = Depends(get_db)):
+    """Change an admin password. Every other session is signed out; this one gets a fresh token."""
+    if not user.password_hash:
+        raise HTTPException(400, "This account signs in without a password.")
+    if not verify_password(body.current, user.password_hash):
+        raise HTTPException(400, "Your current password is wrong.")
+    problem = password_problem(body.new)
+    if problem:
+        raise HTTPException(422, problem)
+    if body.new == body.current:
+        raise HTTPException(422, "Choose a password you haven't used here.")
+    user.password_hash = hash_password(body.new)
+    user.sessions_revoked_at = m.utcnow().replace(microsecond=0)
+    token = create_token(user.id)
+    db.commit()
+    return {"token": token}
 
 
 # ---------------------------------------------------------------- Google OAuth (authorization code + PKCE)
@@ -260,13 +367,16 @@ def google_callback(request: Request, code: str = "", state: str = "", error: st
     if not user:
         user, _ = get_or_create_user(db, email, google_name or None)
         user.google_sub = sub
+    if user.disabled:
+        db.commit()
+        return _fail(SUSPENDED)
     if google_name and _needs_name(user):
         user.name = google_name[:120]
     if claims.get("picture"):
         user.avatar_url = str(claims["picture"])[:500]
     user.email_verified = True
+    token = _session(user)
     db.commit()
-    token = create_token(user.id)
     resp = RedirectResponse(f"/auth/callback#token={quote(token)}&next={quote(saved.get('next', '/dashboard'))}",
                             status_code=302)
     resp.delete_cookie(OAUTH_COOKIE, path="/api/auth/google")
@@ -277,7 +387,7 @@ def google_callback(request: Request, code: str = "", state: str = "", error: st
 
 @router.get("/me")
 def me(user: m.User = Depends(current_user)):
-    return {**user_out(user), "google_linked": bool(user.google_sub)}
+    return me_out(user)
 
 
 @router.patch("/me")
@@ -289,7 +399,7 @@ def update_me(body: MePatch, user: m.User = Depends(current_user), db: Session =
     if body.avatar_color is not None:
         user.avatar_color = body.avatar_color
     db.commit()
-    return {**user_out(user), "google_linked": bool(user.google_sub)}
+    return me_out(user)
 
 
 @router.get("/users/search")

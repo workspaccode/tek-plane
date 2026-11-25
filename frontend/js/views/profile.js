@@ -1,7 +1,7 @@
 // Profile & settings: name, title, avatar color, sign-in methods, theme.
-import { api } from '../api.js';
+import { api, setToken } from '../api.js';
 import { emit, state } from '../store.js';
-import { avatar, colorSwatches, errorToast, h, icon, mount, toast } from '../ui.js';
+import { avatar, colorSwatches, errorToast, h, icon, mount, toast, userHandle } from '../ui.js';
 
 function currentThemePref() {
   try { return localStorage.getItem('tp-theme') || 'system'; } catch (_) { return 'system'; }
@@ -33,14 +33,18 @@ export default async function render(root) {
       preview,
       h('div', { class: 'grow' },
         h('div', { class: 'pf-name' }, u.name),
-        h('div', { class: 'muted row', style: { gap: '6px' } }, u.email,
-          u.email_verified ? h('span', { class: 'role-badge admin', title: 'Email verified' }, icon('check', 11), 'Verified') : null),
+        h('div', { class: 'muted row', style: { gap: '6px' } }, userHandle(u),
+          u.email_verified && !u.email_placeholder ? h('span', { class: 'role-badge admin', title: 'Email verified' }, icon('check', 11), 'Verified') : null,
+          u.is_admin ? h('span', { class: 'role-badge admin' }, icon('shield', 11), 'Admin') : null),
         u.avatar_url ? h('div', { class: 'hint' }, 'Photo from your Google account') : null)),
     h('div', { class: 'pf-fields' },
       h('div', { class: 'field' }, h('label', { class: 'label', for: 'pf-name' }, 'Full name'), name),
       h('div', { class: 'field' }, h('label', { class: 'label', for: 'pf-title' }, 'Job title'), title)),
-    h('div', { class: 'field' }, h('label', { class: 'label' }, 'Email'), h('input', { class: 'input', value: u.email, disabled: true }),
-      h('span', { class: 'hint' }, 'Your email is how you sign in and cannot be changed here.')),
+    u.email_placeholder
+      ? h('div', { class: 'field' }, h('label', { class: 'label' }, 'Username'), h('input', { class: 'input', value: u.username, disabled: true }),
+        h('span', { class: 'hint' }, 'You sign in with this username and your password at /admin/login.'))
+      : h('div', { class: 'field' }, h('label', { class: 'label' }, 'Email'), h('input', { class: 'input', value: u.email, disabled: true }),
+        h('span', { class: 'hint' }, 'Your email is how you sign in and cannot be changed here.')),
     h('div', { class: 'field' }, h('label', { class: 'label' }, 'Avatar color'), colorSwatches(color, (c) => { color = c; drawPreview(); })),
     h('div', { class: 'pf-actions' }, saveBtn));
   profileForm.addEventListener('submit', async (e) => {
@@ -58,14 +62,19 @@ export default async function render(root) {
 
   const signin = h('div', { class: 'card card-pad pf-card' },
     h('h2', { class: 'card-title pf-title' }, 'Sign-in methods'),
-    h('div', { class: 'pf-pref' },
+    u.has_password ? h('div', { class: 'pf-pref' },
+      h('div', null, h('div', { class: 'pf-pref-label' }, 'Admin password'), h('div', { class: 'hint' }, `Sign in at /admin/login as ${u.username}.`)),
+      h('span', { class: 'role-badge admin' }, 'On')) : null,
+    u.email_placeholder ? null : [h('div', { class: 'pf-pref' },
       h('div', null, h('div', { class: 'pf-pref-label' }, 'Email code'), h('div', { class: 'hint' }, `A one-time code is sent to ${u.email} each time you sign in.`)),
       h('span', { class: 'role-badge admin' }, 'On')),
     h('div', { class: 'pf-pref' },
       h('div', null, h('div', { class: 'pf-pref-label' }, 'Google'), h('div', { class: 'hint' }, u.google_linked
         ? 'Your Google account is linked.'
         : 'Use “Continue with Google” on the sign-in page with this email to link it.')),
-      h('span', { class: ['role-badge', u.google_linked && 'admin'] }, u.google_linked ? 'Linked' : 'Not linked')));
+      h('span', { class: ['role-badge', u.google_linked && 'admin'] }, u.google_linked ? 'Linked' : 'Not linked'))]);
+
+  const passwordCard = u.has_password ? passwordForm() : null;
 
   const themeSeg = h('div', { class: 'seg pf-theme' });
   const drawTheme = () => {
@@ -86,5 +95,39 @@ export default async function render(root) {
       h('div', null,
         h('h1', { class: 'page-title' }, 'Profile & settings'),
         h('p', { class: 'page-sub' }, 'How you appear to your teammates, and how tek-plane looks for you.'))),
-    h('div', { class: 'pf-stack' }, profileForm, appearance, signin)));
+    h('div', { class: 'pf-stack' }, profileForm, appearance, signin, passwordCard)));
+}
+
+function passwordForm() {
+  const field = (id, label, autocomplete) => {
+    const input = h('input', { class: 'input', id, type: 'password', autocomplete, maxlength: 256 });
+    return [input, h('div', { class: 'field' }, h('label', { class: 'label', for: id }, label), input)];
+  };
+  const [current, currentField] = field('pw-current', 'Current password', 'current-password');
+  const [next, nextField] = field('pw-new', 'New password', 'new-password');
+  const [again, againField] = field('pw-again', 'Repeat new password', 'new-password');
+  const err = h('div', { class: 'form-error', role: 'alert' });
+  const btn = h('button', { class: 'btn btn-primary', type: 'submit' }, 'Change password');
+  const form = h('form', { class: 'card card-pad pf-card', novalidate: true },
+    h('h2', { class: 'card-title pf-title' }, 'Password'),
+    h('p', { class: 'hint', style: { marginBottom: '12px' } }, 'At least 10 characters, mixing letters with numbers or symbols. Changing it signs you out on your other devices.'),
+    h('div', { class: 'pf-fields' }, currentField, h('span')),
+    h('div', { class: 'pf-fields' }, nextField, againField),
+    err,
+    h('div', { class: 'pf-actions' }, btn));
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    err.textContent = '';
+    if (!current.value) { err.textContent = 'Enter your current password.'; current.focus(); return; }
+    if (next.value !== again.value) { err.textContent = 'The new passwords don’t match.'; again.focus(); return; }
+    btn.disabled = true;
+    try {
+      const res = await api.post('/me/password', { current: current.value, new: next.value });
+      setToken(res.token);
+      [current, next, again].forEach((x) => { x.value = ''; });
+      toast('Password changed. Your other devices were signed out.', 'success');
+    } catch (ex) { err.textContent = ex.message; }
+    btn.disabled = false;
+  });
+  return form;
 }

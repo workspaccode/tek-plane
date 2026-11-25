@@ -4,9 +4,12 @@ import jwt
 from fastapi import Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
+from . import config
 from .config import SECRET_KEY, TOKEN_TTL_HOURS
 from .db import get_db
-from .models import User
+from .models import User, utcnow
+
+SEEN_EVERY = timedelta(minutes=2)  # how often last_seen_at is written
 
 
 def create_token(user_id: int) -> str:
@@ -15,19 +18,37 @@ def create_token(user_id: int) -> str:
     return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
 
 
-def decode_token(token: str) -> int | None:
+def _decode(token: str) -> dict | None:
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-        return int(payload["sub"])
+        int(payload["sub"])
+        return payload
     except (jwt.PyJWTError, KeyError, ValueError):
         return None
 
 
+def decode_token(token: str) -> int | None:
+    payload = _decode(token)
+    return int(payload["sub"]) if payload else None
+
+
 def user_from_token(db: Session, token: str | None) -> User | None:
-    if not token:
+    """The token's user, unless the account is suspended or an admin signed it out after the token was issued."""
+    payload = _decode(token) if token else None
+    if not payload:
         return None
-    user_id = decode_token(token)
-    return db.get(User, user_id) if user_id else None
+    user = db.get(User, int(payload["sub"]))
+    if not user or user.disabled:
+        return None
+    if user.sessions_revoked_at:
+        revoked = int(user.sessions_revoked_at.replace(tzinfo=timezone.utc).timestamp())
+        if int(payload.get("iat", 0)) < revoked:
+            return None
+    return user
+
+
+def is_admin(user: User | None) -> bool:
+    return bool(user and (user.is_admin or user.email.lower() in config.ADMIN_EMAILS))
 
 
 def _bearer(request: Request) -> str | None:
@@ -37,10 +58,24 @@ def _bearer(request: Request) -> str | None:
     return None
 
 
+def _touch(db: Session, user: User) -> None:
+    now = utcnow()
+    if not user.last_seen_at or now - user.last_seen_at > SEEN_EVERY:
+        user.last_seen_at = now
+        db.commit()
+
+
 def current_user(request: Request, db: Session = Depends(get_db)) -> User:
     user = user_from_token(db, _bearer(request))
     if not user:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not authenticated")
+    _touch(db, user)
+    return user
+
+
+def admin_user(user: User = Depends(current_user)) -> User:
+    if not is_admin(user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Admins only")
     return user
 
 
