@@ -22,7 +22,8 @@ from ..serializers import (
     task_summaries,
 )
 from ..services import (
-    DEFAULT_TAGS,
+    CATEGORIES,
+    default_tags,
     ROLES,
     TEMPLATES,
     apply_template,
@@ -45,6 +46,7 @@ class ProjectIn(BaseModel):
     icon: str = "folder"
     template: str = "kanban"
     kind: str = "board"  # board | mindmap
+    category: str = "general"  # general | software | hardware
 
 
 class ConvertIn(BaseModel):
@@ -56,6 +58,7 @@ class ProjectPatch(BaseModel):
     description: str | None = None
     color: str | None = None
     icon: str | None = None
+    category: str | None = None
     archived: bool | None = None
 
 
@@ -117,8 +120,10 @@ def list_projects(user: m.User = Depends(current_user), db: Session = Depends(ge
 def create_project(body: ProjectIn, user: m.User = Depends(current_user), db: Session = Depends(get_db)):
     if body.kind not in ("board", "mindmap"):
         raise HTTPException(422, "Invalid project type")
+    if body.category not in CATEGORIES:
+        raise HTTPException(422, "Choose General, Software or Hardware")
     p = m.Project(name=body.name.strip(), description=body.description, color=body.color,
-                  icon=body.icon, owner_id=user.id, kind=body.kind)
+                  icon=body.icon, owner_id=user.id, kind=body.kind, category=body.category)
     db.add(p)
     db.flush()
     db.add(m.ProjectMember(project_id=p.id, user_id=user.id, role="owner"))
@@ -129,9 +134,9 @@ def create_project(body: ProjectIn, user: m.User = Depends(current_user), db: Se
         db.add(m.MindNode(map_id=mm.id, text=p.name))
     else:
         apply_template(db, p, body.template)
-        for name, color in DEFAULT_TAGS:
+        for name, color in default_tags(p.category):
             db.add(m.Tag(project_id=p.id, name=name, color=color))
-    log(db, p.id, user, "project.created", name=p.name, kind=p.kind)
+    log(db, p.id, user, "project.created", name=p.name, kind=p.kind, category=p.category)
     db.commit()
     return project_out(p, "owner")
 
@@ -170,6 +175,8 @@ def update_project(project_id: int, body: ProjectPatch,
     pm = require_role(db, project_id, user, "admin")
     p = db.get(m.Project, project_id)
     changes = body.model_dump(exclude_unset=True)
+    if "category" in changes and changes["category"] not in CATEGORIES:
+        raise HTTPException(422, "Choose General, Software or Hardware")
     old_name = p.name
     for k, v in changes.items():
         setattr(p, k, v.strip() if isinstance(v, str) and k == "name" else v)
@@ -203,7 +210,7 @@ def convert_to_board(project_id: int, body: ConvertIn, user: m.User = Depends(cu
     if not db.scalar(select(func.count(m.Section.id)).where(m.Section.project_id == p.id)):
         apply_template(db, p, body.template)
     if not db.scalar(select(func.count(m.Tag.id)).where(m.Tag.project_id == p.id)):
-        for name, color in DEFAULT_TAGS:
+        for name, color in default_tags(p.category):
             db.add(m.Tag(project_id=p.id, name=name, color=color))
     log(db, p.id, user, "project.converted")
     db.commit()

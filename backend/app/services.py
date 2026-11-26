@@ -275,8 +275,26 @@ TEMPLATES = {
         ("Approval", "#f5a623", "eye", []),
         ("Published", "#2fb67c", "check", [("complete", {})]),
     ],
+    "software": [
+        ("Backlog", "#8792a2", "inbox", []),
+        ("To Do", "#9b6bff", "flag", []),
+        ("In Progress", "#4f7cff", "play", []),
+        ("Code Review", "#00a3bf", "eye", []),
+        ("Testing", "#f5a623", "beaker", []),
+        ("Done", "#2fb67c", "check", [("complete", {})]),
+    ],
+    "hardware": [
+        ("Requirements", "#8792a2", "inbox", []),
+        ("Design", "#9b6bff", "pen", []),
+        ("Sourcing", "#00a3bf", "archive", []),
+        ("Prototype", "#4f7cff", "zap", []),
+        ("Testing", "#f5a623", "beaker", []),
+        ("Done", "#2fb67c", "check", [("complete", {})]),
+    ],
     "blank": [("Open", "#8792a2", "inbox", [])],
 }
+
+CATEGORIES = ("general", "software", "hardware")
 
 
 def apply_template(db: Session, project: m.Project, template: str):
@@ -287,6 +305,16 @@ def apply_template(db: Session, project: m.Project, template: str):
 
 
 DEFAULT_TAGS = [("Bug", "#ef5350"), ("Feature", "#4f7cff"), ("Improvement", "#2fb67c"), ("Research", "#9b6bff")]
+CATEGORY_TAGS = {
+    "software": [("Bug", "#ef5350"), ("Feature", "#4f7cff"), ("Improvement", "#2fb67c"), ("Tech debt", "#f5a623"),
+                 ("Docs", "#9b6bff")],
+    "hardware": [("Electrical", "#f5a623"), ("Mechanical", "#4f7cff"), ("Firmware", "#9b6bff"), ("Sourcing", "#00a3bf"),
+                 ("Bug", "#ef5350")],
+}
+
+
+def default_tags(category: str | None):
+    return CATEGORY_TAGS.get(category or "general", DEFAULT_TAGS)
 
 
 def default_agenda(db: Session, user: m.User):

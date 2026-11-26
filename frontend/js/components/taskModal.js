@@ -154,6 +154,10 @@ async function renderTask(modal, st) {
           }))),
         }, h('span', { class: 'swatch', style: { background: task.section.color } }), task.section.name, canEdit ? icon('chevron-down', 13) : null),
         h('span', { class: 'tm-num' }, `#${task.number}`),
+        task.external ? h('a', {
+          class: 'tm-external', href: task.external.url, target: '_blank', rel: 'noopener noreferrer',
+          title: `Opens ${task.external.label} on ${task.external.provider === 'github' ? 'GitHub' : task.external.provider}`,
+        }, icon(task.external.provider === 'github' ? 'github' : 'external', 13), task.external.label.replace(/^.*\//, '')) : null,
         archived ? h('span', { class: 'role-badge' }, 'Archived') : null),
       h('div', { class: 'tm-head-actions' },
         canEdit && !archived ? h('button', {

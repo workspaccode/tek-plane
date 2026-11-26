@@ -1,7 +1,7 @@
 // All projects: searchable grid with active/archived toggle and sorting.
 import { on, state } from '../store.js';
 import { avatarStack, emptyState, h, icon, mount, ROLES } from '../ui.js';
-import { openNewProject } from '../components/projectForm.js';
+import { CATEGORY_INFO, openNewProject } from '../components/projectForm.js';
 
 /** Project summary card (from GET /api/projects). Used here and on the dashboard. */
 export function projectCard(p) {
@@ -11,7 +11,10 @@ export function projectCard(p) {
     h('div', { class: 'pj-card-top' },
       h('span', { class: 'project-dot', style: { background: p.color, width: '34px', height: '34px', borderRadius: '9px' } }, icon(p.icon || 'folder', 16)),
       h('div', { class: 'grow' },
-        h('div', { class: 'pj-name truncate' }, p.name),
+        h('div', { class: 'pj-name-row' },
+          h('span', { class: 'pj-name truncate' }, p.name),
+          p.category && p.category !== 'general' ? h('span', { class: `pj-cat category-${p.category}`, title: `${CATEGORY_INFO[p.category]?.label} project` },
+            icon(CATEGORY_INFO[p.category]?.icon || 'layers', 11), CATEGORY_INFO[p.category]?.label) : null),
         h('div', { class: 'pj-desc truncate' }, p.description || `${p.member_count} member${p.member_count === 1 ? '' : 's'}`)),
       p.role && p.role !== 'member' ? h('span', { class: ['role-badge', p.role] }, ROLES[p.role]) : null),
     p.kind === 'mindmap' ? h('div', { class: 'pj-foot pj-mindmap' }, icon('mindmap', 14), h('span', null, 'Mind map'), h('div', { class: 'grow' }),

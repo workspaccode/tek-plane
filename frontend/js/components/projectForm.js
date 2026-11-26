@@ -3,8 +3,16 @@ import { navigate } from '../router.js';
 import { loadProjects } from '../store.js';
 import { COLORS, PROJECT_ICONS, colorSwatches, errorToast, h, icon, mount, openModal } from '../ui.js';
 
+export const CATEGORY_INFO = {
+  general: { label: 'General', icon: 'layers', desc: 'Plans, events, content, anything. Simple and flexible.', template: 'kanban', projectIcon: 'folder' },
+  software: { label: 'Software', icon: 'code', desc: 'Sprints, code review and testing. Connects to GitHub, Slack and Discord.', template: 'software', projectIcon: 'code' },
+  hardware: { label: 'Hardware', icon: 'cpu', desc: 'From requirements and design to prototype and testing.', template: 'hardware', projectIcon: 'cpu' },
+};
+
 export const TEMPLATE_INFO = {
   kanban: { label: 'Kanban', desc: 'Open, In Progress, Review, Done' },
+  software: { label: 'Software', desc: 'Backlog, To Do, In Progress, Code Review, Testing, Done' },
+  hardware: { label: 'Hardware', desc: 'Requirements, Design, Sourcing, Prototype, Testing, Done' },
   scrum: { label: 'Scrum', desc: 'Backlog, Sprint, In Progress, Testing, Done' },
   personal: { label: 'Personal', desc: 'To Do, Doing, Done' },
   marketing: { label: 'Content', desc: 'Ideas, Planned, Writing, Approval, Published' },
@@ -12,13 +20,14 @@ export const TEMPLATE_INFO = {
 };
 
 /** Opens the create-project dialog, or edit mode when `project` is given. */
-export function openNewProject(project = null, { kind: presetKind = 'board' } = {}) {
+export function openNewProject(project = null, { kind: presetKind = 'board', category: presetCategory = 'general' } = {}) {
   const editing = !!project;
   let kind = project?.kind || presetKind;
+  let category = project?.category || presetCategory;
   let color = project?.color || COLORS[kind === 'mindmap' ? 1 : 0];
   let iconName = project?.icon || (kind === 'mindmap' ? 'mindmap' : 'folder');
   let iconTouched = !!project;
-  let template = 'kanban';
+  let template = CATEGORY_INFO[category]?.template || 'kanban';
   const name = h('input', { class: 'input', value: project?.name || '', placeholder: 'e.g. Website relaunch', autofocus: true, maxlength: 160 });
   const desc = h('textarea', { class: 'textarea', placeholder: 'What is this project about? (optional)', rows: 3 }, project?.description || '');
   const preview = h('span', { class: 'project-dot', style: { width: '40px', height: '40px', borderRadius: '11px' } });
@@ -42,6 +51,20 @@ export function openNewProject(project = null, { kind: presetKind = 'board' } = 
   drawTemplates();
 
   const templateField = h('div', { class: 'field' }, h('label', { class: 'label' }, 'Board layout'), templates);
+  const categories = h('div', { class: 'category-grid', role: 'radiogroup', 'aria-label': 'Project type' });
+  const drawCategories = () => mount(categories, Object.entries(CATEGORY_INFO).map(([id, c]) => h('button', {
+    type: 'button', role: 'radio', class: ['category-card', `category-${id}`, category === id && 'active'], 'aria-checked': String(category === id),
+    onclick: () => {
+      const before = category;
+      category = id;
+      if (!editing) {
+        if (template === CATEGORY_INFO[before].template) { template = c.template; drawTemplates(); }
+        if (!iconTouched && kind !== 'mindmap') { iconName = c.projectIcon; drawIcons(); drawPreview(); }
+      }
+      drawCategories();
+    },
+  }, h('span', { class: 'category-icon' }, icon(c.icon, 18)), h('strong', null, c.label), h('span', null, c.desc))));
+  drawCategories();
   const kinds = h('div', { class: 'kind-grid' });
   const drawKinds = () => {
     mount(kinds, [
@@ -51,7 +74,7 @@ export function openNewProject(project = null, { kind: presetKind = 'board' } = 
       type: 'button', class: ['kind-card', kind === id && 'active'], 'aria-pressed': String(kind === id),
       onclick: () => {
         kind = id;
-        if (!iconTouched) { iconName = id === 'mindmap' ? 'mindmap' : 'folder'; drawIcons(); drawPreview(); }
+        if (!iconTouched) { iconName = id === 'mindmap' ? 'mindmap' : CATEGORY_INFO[category].projectIcon; drawIcons(); drawPreview(); }
         drawKinds();
       },
     }, h('span', { class: 'kind-icon' }, icon(ic, 20)), h('strong', null, label), h('span', null, desc))));
@@ -65,7 +88,7 @@ export function openNewProject(project = null, { kind: presetKind = 'board' } = 
     if (!name.value.trim()) { name.focus(); return; }
     submit.disabled = true;
     try {
-      const body = { name: name.value.trim(), description: desc.value, color, icon: iconName };
+      const body = { name: name.value.trim(), description: desc.value, color, icon: iconName, category };
       if (editing) {
         await api.patch(`/projects/${project.id}`, body);
         await loadProjects();
@@ -86,9 +109,10 @@ export function openNewProject(project = null, { kind: presetKind = 'board' } = 
 
   const m = openModal({
     title: editing ? 'Edit project' : 'New project',
-    width: 560,
+    width: 620,
     content: h('div', null,
-      editing ? null : h('div', { class: 'field' }, h('label', { class: 'label' }, 'Type'), kinds),
+      h('div', { class: 'field' }, h('label', { class: 'label' }, 'What kind of project is it?'), categories),
+      editing ? null : h('div', { class: 'field' }, h('label', { class: 'label' }, 'Format'), kinds),
       h('div', { class: 'row', style: { gap: '14px', alignItems: 'flex-end', marginBottom: '14px' } },
         preview,
         h('div', { class: 'field grow', style: { margin: 0 } }, h('label', { class: 'label' }, 'Project name'), name)),

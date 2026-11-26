@@ -94,7 +94,7 @@ export default async function render(root) {
     h('div', { class: 'page-head' },
       h('div', null,
         h('h1', { class: 'page-title' }, 'Profile & settings'),
-        h('p', { class: 'page-sub' }, 'How you appear to your teammates, and how tek-plane looks for you.'))),
+        h('p', { class: 'page-sub' }, 'How you appear to your teammates, and how 6dx looks for you.'))),
     h('div', { class: 'pf-stack' }, profileForm, appearance, signin, passwordCard)));
 }
 

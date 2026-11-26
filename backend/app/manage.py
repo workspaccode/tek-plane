@@ -82,7 +82,7 @@ def set_password(username: str, password: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(prog="python -m backend.app.manage", description="tek-plane admin tools")
+    parser = argparse.ArgumentParser(prog="python -m backend.app.manage", description="6dx admin tools")
     sub = parser.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("create-admin", help="create or update an admin who signs in with a username and password")
     c.add_argument("username")

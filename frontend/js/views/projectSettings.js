@@ -7,6 +7,7 @@ import {
   fmtDate, h, icon, menu, mount, openModal, popover, toast,
 } from '../ui.js';
 import { addBoardDialog, isMindmapProject, projectShell } from '../components/projectShell.js';
+import { CATEGORY_INFO } from '../components/projectForm.js';
 
 const BOARD_ONLY = new Set(['sections', 'automations', 'tags']);
 const TABS = [
@@ -96,6 +97,13 @@ export default async function render(root, { params }) {
     const editable = isAdmin();
     let color = p.color;
     let ic = p.icon || 'folder';
+    let category = p.category || 'general';
+    const categorySeg = h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Project type' });
+    const drawCategory = () => mount(categorySeg, Object.entries(CATEGORY_INFO).map(([id, c]) => h('button', {
+      type: 'button', role: 'radio', class: category === id && 'active', 'aria-checked': String(category === id), disabled: !editable,
+      onclick: () => { category = id; drawCategory(); },
+    }, icon(c.icon, 14), c.label)));
+    drawCategory();
     const name = h('input', { class: 'input', value: p.name, maxlength: 160, disabled: !editable });
     const desc = h('textarea', { class: 'textarea', rows: 3, disabled: !editable, placeholder: 'What is this project about?' }, p.description || '');
     const preview = h('span', { class: 'project-dot ps-preview' });
@@ -112,7 +120,7 @@ export default async function render(root, { params }) {
       if (!name.value.trim()) { name.focus(); return; }
       save.disabled = true;
       try {
-        await api.patch(`/projects/${projectId}`, { name: name.value.trim(), description: desc.value, color, icon: ic });
+        await api.patch(`/projects/${projectId}`, { name: name.value.trim(), description: desc.value, color, icon: ic, category });
         await Promise.all([reload(), loadProjects()]);
         toast('Project updated', 'success');
       } catch (err) { errorToast(err); } finally { save.disabled = false; }
@@ -122,6 +130,8 @@ export default async function render(root, { params }) {
       h('div', { class: 'row ps-name-row' }, preview,
         h('div', { class: 'field grow', style: { margin: 0 } }, h('label', { class: 'label' }, 'Project name'), name)),
       h('div', { class: 'field' }, h('label', { class: 'label' }, 'Description'), desc),
+      h('div', { class: 'field' }, h('label', { class: 'label' }, 'Project type'), categorySeg,
+        h('span', { class: 'hint' }, 'Software projects get an Integrations tab for GitHub, Slack and Discord.')),
       h('div', { class: 'field' }, h('label', { class: 'label' }, 'Color'),
         editable ? colorSwatches(color, (c) => { color = c; drawPreview(); }) : h('span', { class: 'swatch', style: { background: color, width: '20px', height: '20px' } })),
       h('div', { class: 'field' }, h('label', { class: 'label' }, 'Icon'), icons),
@@ -243,7 +253,7 @@ export default async function render(root, { params }) {
     };
     btn.addEventListener('click', invite);
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); invite(); } });
-    return panel('Invite people', 'Add teammates who already have a tek-plane account.',
+    return panel('Invite people', 'Add teammates who already have a 6dx account.',
       h('div', { class: 'ps-invite' }, h('div', { class: 'ps-invite-input' }, input, suggestions), roleSel, btn));
   }
 

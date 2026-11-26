@@ -35,7 +35,7 @@ def sender() -> str:
 
 
 def _log(msg: str) -> None:
-    print(f"[tek-plane] {msg}", file=sys.stderr, flush=True)
+    print(f"[6dx] {msg}", file=sys.stderr, flush=True)
 
 
 def _hint(exc: Exception) -> str:
@@ -116,7 +116,7 @@ def send_email(to: str, subject: str, text: str, html: str | None = None) -> Non
 def _layout(title: str, intro: str, body_html: str, footer: str) -> str:
     return f"""<div style="background:#f6f5f2;padding:32px 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">
   <div style="max-width:460px;margin:auto;background:#fff;border-radius:18px;padding:30px 28px;color:#37352f;box-shadow:0 1px 3px rgba(0,0,0,.06)">
-    <div style="font-weight:700;font-size:15px;color:#2383e2;margin-bottom:18px">tek-plane</div>
+    <div style="font-weight:700;font-size:15px;color:#2383e2;margin-bottom:18px">6dx</div>
     <h2 style="margin:0 0 8px;font-size:22px">{title}</h2>
     <p style="margin:0 0 20px;color:#6b6a66;line-height:1.55">{intro}</p>
     {body_html}
@@ -133,12 +133,12 @@ def _button(url: str, label: str) -> str:
 def send_login_email(to: str, code: str, link: str, is_new: bool) -> None:
     minutes = config.OTP_TTL_MINUTES
     if is_new:
-        subject = f"Activate your tek-plane account ({code})"
+        subject = f"Activate your 6dx account ({code})"
         title, action = "Activate your account", "Activate account"
         intro = "Welcome! Click the button to activate your account and sign in, or enter the code below."
     else:
-        subject = f"{code} is your tek-plane login code"
-        title, action = "Sign in to tek-plane", "Sign in"
+        subject = f"{code} is your 6dx login code"
+        title, action = "Sign in to 6dx", "Sign in"
         intro = "Click the button to sign in, or enter the code below on the sign-in page."
     body = (f'<p style="margin:0 0 22px">{_button(link, action)}</p>'
             f'<div style="font-size:30px;font-weight:700;letter-spacing:8px;background:#f6f5f2;border-radius:12px;'
@@ -151,10 +151,10 @@ def send_login_email(to: str, code: str, link: str, is_new: bool) -> None:
 def send_invite_email(to: str, inviter: str, project: str, link: str) -> None:
     days = config.INVITE_LINK_TTL_DAYS
     title = f"{_html.escape(inviter)} invited you to “{_html.escape(project)}”"
-    text = (f"{inviter} added you to the project “{project}” on tek-plane.\n\nAccept the invitation: {link}\n\n"
+    text = (f"{inviter} added you to the project “{project}” on 6dx.\n\nAccept the invitation: {link}\n\n"
             f"The link works once and expires in {days} days. Later you can sign in with Google or an email code.")
-    send_email(to, f"{inviter} invited you to “{project}” on tek-plane", text,
-               _layout(title, "You've been added to a project on tek-plane. Accept to activate your account and open it.",
+    send_email(to, f"{inviter} invited you to “{project}” on 6dx", text,
+               _layout(title, "You've been added to a project on 6dx. Accept to activate your account and open it.",
                        f'<p style="margin:0">{_button(link, "Accept invitation")}</p>',
                        f"The link works once and expires in {days} days. Afterwards, sign in with Google or an email code."))
 
@@ -173,8 +173,8 @@ if __name__ == "__main__":
         print("No email provider configured. Copy .env.example to .env and set RESEND_API_KEY or the SMTP_* values.")
         sys.exit(1)
     try:
-        deliver(target, "tek-plane test email", "If you can read this, email delivery works.",
-                _layout("It works!", "Email delivery from tek-plane is configured correctly.", "", "Sent by the test command."))
+        deliver(target, "6dx test email", "If you can read this, email delivery works.",
+                _layout("It works!", "Email delivery from 6dx is configured correctly.", "", "Sent by the test command."))
         print(f"Sent to {target}. Check the inbox (and the spam folder).")
     except Exception as exc:  # noqa: BLE001
         print(f"FAILED: {exc}")

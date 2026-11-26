@@ -146,7 +146,7 @@ export default async function render(root, { query }) {
       rows.push([e.started_at, e.ended_at || '', e.project.name, e.task.number, e.task.title, e.user?.name || '', e.note, Math.round(e.duration_seconds / 60)]);
     }
     const blob = new Blob([rows.map((r) => r.map(csvCell).join(',')).join('\n')], { type: 'text/csv' });
-    const a = h('a', { href: URL.createObjectURL(blob), download: `tek-plane-time-${days}d.csv` });
+    const a = h('a', { href: URL.createObjectURL(blob), download: `6dx-time-${days}d.csv` });
     document.body.appendChild(a);
     a.click();
     a.remove();

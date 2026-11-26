@@ -48,6 +48,7 @@ class Project(Base):
     color: Mapped[str] = mapped_column(String(20), default="#4f7cff")
     icon: Mapped[str] = mapped_column(String(40), default="folder")
     kind: Mapped[str] = mapped_column(String(20), default="board")  # board | mindmap
+    category: Mapped[str] = mapped_column(String(20), default="general")  # general | software | hardware
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
     task_counter: Mapped[int] = mapped_column(Integer, default=0)
@@ -147,6 +148,8 @@ class Task(Base):
     estimate_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     recurrence: Mapped[str | None] = mapped_column(String(20), nullable=True)  # daily|weekly|monthly
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    external_url: Mapped[str | None] = mapped_column(String(500), nullable=True)  # e.g. the GitHub issue it came from
+    external_ref: Mapped[str | None] = mapped_column(String(160), nullable=True, index=True)  # github:owner/repo#12
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
@@ -344,3 +347,37 @@ class MindNode(Base):
     task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True)
 
     map: Mapped[MindMap] = relationship(back_populates="nodes")
+
+
+class Integration(Base):
+    """A software project's connection to an outside app (GitHub, Slack, Discord)."""
+    __tablename__ = "integrations"
+    __table_args__ = (UniqueConstraint("project_id", "provider"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    provider: Mapped[str] = mapped_column(String(20))  # github | slack | discord
+    config: Mapped[dict] = mapped_column(JSON, default=dict)  # repo, events, … (never secrets)
+    secret: Mapped[str | None] = mapped_column(Text, nullable=True)  # encrypted token / webhook URL
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
+
+class GithubAccount(Base):
+    """A person's GitHub identity, authorized through the GitHub App. Its user access token can only reach
+    repositories that both the person and the app can access, which is how linking a repository is checked."""
+    __tablename__ = "github_accounts"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True)
+    github_id: Mapped[int] = mapped_column(Integer, index=True)
+    login: Mapped[str] = mapped_column(String(100))
+    name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    access_token: Mapped[str] = mapped_column(Text)  # encrypted
+    refresh_token: Mapped[str | None] = mapped_column(Text, nullable=True)  # encrypted
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    refresh_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

@@ -6,7 +6,7 @@ import { can, emit, loadBoard, loadProjects, on, state } from '../store.js';
 import {
   PRIORITIES, avatar, confirmDialog, debounce, errorToast, h, icon, menu, mount, openModal, pickerPopover, toast,
 } from '../ui.js';
-import { openNewProject, TEMPLATE_INFO } from './projectForm.js';
+import { CATEGORY_INFO, openNewProject, TEMPLATE_INFO } from './projectForm.js';
 
 // [path suffix, icon, label, tab id]
 const BOARD_TABS = [
@@ -21,7 +21,14 @@ const MINDMAP_TABS = [
   ['', 'mindmap', 'Mind Map', 'mindmap'],
   ['/activity', 'activity', 'Activity', 'activity'],
 ];
+const INTEGRATIONS_TAB = ['/integrations', 'plug', 'Integrations', 'integrations'];
 export const isMindmapProject = () => state.board?.project.kind === 'mindmap';
+
+function tabsFor(p) {
+  const tabs = p.kind === 'mindmap' ? [...MINDMAP_TABS] : [...BOARD_TABS];
+  if (p.category === 'software') tabs.splice(tabs.length - 1, 0, INTEGRATIONS_TAB);
+  return tabs;
+}
 
 // ------------------------------------------------------------------ filters
 
@@ -134,7 +141,7 @@ export async function projectShell(root, projectId, tab, onBoard) {
   projectId = Number(projectId);
   resetFiltersFor(projectId);
   const board = await loadBoard(projectId);
-  if (board.project.kind === 'mindmap' && !['mindmap', 'activity', 'settings'].includes(tab)) {
+  if (board.project.kind === 'mindmap' && !['mindmap', 'activity', 'settings', 'integrations'].includes(tab)) {
     // board-only views don't exist for mind map projects
     navigate(`/projects/${projectId}`, { replace: true });
     return { body: h('div'), board, cleanup: () => {} };
@@ -154,6 +161,8 @@ export async function projectShell(root, projectId, tab, onBoard) {
         h('div', { class: 'grow' },
           h('div', { class: 'row', style: { gap: '8px' } },
             h('h1', { class: 'project-name truncate' }, p.name),
+            p.category && p.category !== 'general' ? h('span', { class: `role-badge category-badge category-${p.category}` },
+              icon(CATEGORY_INFO[p.category]?.icon || 'layers', 11), CATEGORY_INFO[p.category]?.label || p.category) : null,
             p.kind === 'mindmap' ? h('span', { class: 'role-badge kind-badge' }, icon('mindmap', 11), 'Mind map') : null,
             p.archived ? h('span', { class: 'role-badge' }, 'Archived') : null,
             h('button', { class: 'icon-btn sm', 'aria-label': 'Project menu', onclick: (e) => projectMenu(e.currentTarget) }, icon('chevron-down', 16))),
@@ -165,7 +174,7 @@ export async function projectShell(root, projectId, tab, onBoard) {
           can('admin') ? h('button', { class: 'btn btn-secondary btn-sm', onclick: () => navigate(`/projects/${p.id}/settings?tab=members`) },
             icon('user-plus', 14), 'Invite') : null)),
       h('nav', { class: 'tabs project-tabs' },
-        (p.kind === 'mindmap' ? MINDMAP_TABS : BOARD_TABS).map(([suffix, ic, label, id]) => h('a', {
+        tabsFor(p).map(([suffix, ic, label, id]) => h('a', {
           href: `/projects/${p.id}${suffix}`, class: ['tab', tab === id && 'active'],
         }, icon(ic, 15), label)),
         h('div', { class: 'grow' }),
