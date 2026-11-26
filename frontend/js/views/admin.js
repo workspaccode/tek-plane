@@ -433,10 +433,16 @@ async function systemTab(el) {
         pill(a.from_config ? 'From .env' : a.has_password ? 'Password' : 'Granted here')))),
       s.pending_admin_emails.length ? h('p', { class: 'hint' }, `Waiting to sign up: ${s.pending_admin_emails.join(', ')}`) : null,
       h('p', { class: 'hint' }, 'Password admins are created with: uv run python -m backend.app.manage create-admin NAME. Email admins can be listed in TEKPLANE_ADMIN_EMAILS in .env, or made admin from the Users tab.')),
-    section('github', 'GitHub App', pill(s.github_app.configured ? 'Ready' : 'Optional', s.github_app.configured ? 'success' : ''),
+    section('github', 'GitHub App', pill(s.github_app.oauth_ready ? 'Ready' : s.github_app.configured ? 'Needs sign-in' : 'Optional',
+      s.github_app.oauth_ready ? 'success' : s.github_app.configured ? 'warning' : ''),
       s.github_app.configured
         ? [row('App', s.github_app.slug ? h('a', { href: `https://github.com/apps/${s.github_app.slug}`, target: '_blank', rel: 'noopener noreferrer' }, s.github_app.slug) : `ID ${s.github_app.app_id}`),
-          row('Webhook', s.github_app.webhook_url ? code(s.github_app.webhook_url) : 'Off (needs a public address)')]
+          row('Account sign-in', s.github_app.oauth_ready ? 'Ready'
+            : `Missing ${[!s.github_app.client_id_set && 'GITHUB_APP_CLIENT_ID', !s.github_app.client_secret_set && 'GITHUB_APP_CLIENT_SECRET'].filter(Boolean).join(' and ')}`),
+          row('Callback URL', code(s.github_app.callback_url)),
+          row('Linked accounts', num(s.github_app.linked_accounts)),
+          row('Webhook', s.github_app.webhook_url ? code(s.github_app.webhook_url) : 'Off (needs a public address)'),
+          s.github_app.oauth_ready ? null : h('p', { class: 'hint' }, 'People connect their own GitHub account before linking a repository through the app, so only someone with access to it can link it. Add the app’s client ID and a client secret to .env, and the callback URL above to the app’s settings.')]
         : h('p', { class: 'hint' }, s.github_app.app_id && !s.github_app.key_found
           ? 'GITHUB_APP_ID is set, but the private key file wasn’t found. Check GITHUB_APP_PRIVATE_KEY_PATH.'
           : 'Software projects can connect GitHub with personal tokens. Add GITHUB_APP_ID and the app’s private key to .env to connect as a GitHub App instead.'),

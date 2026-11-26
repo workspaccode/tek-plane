@@ -57,6 +57,10 @@ GITHUB_APP_SLUG = os.environ.get("GITHUB_APP_SLUG", "").strip()
 GITHUB_APP_PRIVATE_KEY_PATH = os.environ.get("GITHUB_APP_PRIVATE_KEY_PATH", "").strip()
 GITHUB_APP_PRIVATE_KEY = os.environ.get("GITHUB_APP_PRIVATE_KEY", "").replace("\\n", "\n").strip()
 GITHUB_WEBHOOK_SECRET = os.environ.get("GITHUB_WEBHOOK_SECRET", "").strip()
+# The app's OAuth credentials (app settings → Client ID / Generate a new client secret). People connect their
+# own GitHub account with them, so a repository can only be linked by someone who has access to it on GitHub.
+GITHUB_APP_CLIENT_ID = os.environ.get("GITHUB_APP_CLIENT_ID", "").strip()
+GITHUB_APP_CLIENT_SECRET = os.environ.get("GITHUB_APP_CLIENT_SECRET", "").strip()
 
 # Site admins: comma-separated emails. They get the Admin panel and can't be demoted from it.
 ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get("TEKPLANE_ADMIN_EMAILS", "").split(",") if e.strip()}

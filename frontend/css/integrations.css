@@ -81,6 +81,41 @@ a.in-card-detail:hover { color: var(--text); }
 .in-app-hint { margin: -4px 0 12px; }
 @media (max-width: 560px) { .in-methods { grid-template-columns: 1fr; } }
 
+/* GitHub account + repository picker */
+.in-account-cta { display: flex; align-items: center; gap: 12px; padding: 14px; margin-bottom: 12px; border-radius: 14px;
+  border: 1px dashed var(--border-strong); background: var(--surface-2); }
+.in-account-cta strong { display: block; font-size: 13.5px; margin-bottom: 2px; }
+.in-account-cta .grow > span { display: block; font-size: 12px; color: var(--text-3); line-height: 1.45; }
+.in-account { display: flex; align-items: center; gap: 10px; padding: 10px 12px; margin-bottom: 10px; border-radius: 13px;
+  border: 1px solid var(--border); background: var(--surface-2); }
+.in-account .in-gh-avatar { width: 30px; height: 30px; }
+.in-account-name { font-size: 13.5px; font-weight: 600; }
+.in-account a.small { text-decoration: none; }
+.in-account a.small:hover { color: var(--text); }
+.in-repo-search { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.in-repo-search .input { flex: 1; min-width: 0; }
+.in-repo-box { margin-bottom: 12px; }
+.in-repo-list { max-height: 300px; overflow-y: auto; border: 1px solid var(--border); border-radius: 13px; padding: 4px; background: var(--surface); }
+.in-repo-group { display: flex; align-items: center; gap: 6px; padding: 8px 10px 4px; font-size: 11.5px; font-weight: 600; color: var(--text-3);
+  text-transform: uppercase; letter-spacing: .04em; }
+.in-repo-group .in-gh-avatar { width: 16px; height: 16px; }
+.in-repo { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border-radius: 9px; text-align: left; color: var(--text); }
+.in-repo:hover:not(:disabled) { background: var(--hover); }
+.in-repo.active { background: var(--primary-soft); }
+.in-repo:disabled { opacity: .55; cursor: not-allowed; }
+.in-repo-icon { display: inline-flex; color: var(--text-3); flex-shrink: 0; }
+.in-repo-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.in-repo-name { font-size: 13px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.in-repo-desc { font-size: 12px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.in-repo-check { display: inline-flex; width: 15px; flex-shrink: 0; color: var(--primary-text); }
+.in-repo-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 22px 16px; text-align: center;
+  border: 1px dashed var(--border-strong); border-radius: 13px; color: var(--text-3); }
+.in-repo-empty strong { color: var(--text); font-size: 13.5px; }
+.in-repo-empty span { font-size: 12.5px; max-width: 340px; line-height: 1.45; }
+.in-repo-empty .btn { margin-top: 6px; }
+.in-repo-loading { display: grid; place-items: center; min-height: 120px; border: 1px solid var(--border); border-radius: 13px; }
+.in-repo-none { padding: 18px 10px; text-align: center; font-size: 13px; color: var(--text-3); }
+
 /* GitHub panel */
 .in-gh { overflow: hidden; }
 .in-gh-head { display: flex; align-items: flex-start; gap: 14px; padding: 18px 20px 14px; }

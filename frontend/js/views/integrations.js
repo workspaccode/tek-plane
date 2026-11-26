@@ -61,58 +61,190 @@ function eventsPicker(events, selected, onChange) {
   }));
 }
 
+const installHref = (projectId) => `/api/integrations/github/install?back=${encodeURIComponent(`/projects/${projectId}/integrations`)}`;
+
+async function authorizeGithub(projectId, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api.post('/integrations/github/authorize', { project_id: projectId });
+    location.assign(r.url);
+  } catch (ex) { errorToast(ex); if (btn) btn.disabled = false; }
+}
+
 function connectGithub(projectId, current, done, appInfo = {}) {
   const appReady = !!appInfo.configured;
+  let account = appInfo.account || null;
   let method = current?.auth === 'token' || current?.auth === 'none' || !appReady ? 'token' : 'app';
-  const repo = h('input', { class: 'input', placeholder: 'owner/repository or https://github.com/owner/repository', value: current?.repo || '', autofocus: true, spellcheck: 'false' });
+  let picked = null;
+  let repos = null;
+  let reposError = null;
+  let loadedAt = 0;
+  const repo = h('input', { class: 'input', placeholder: 'owner/repository or https://github.com/owner/repository', value: current?.repo || '', spellcheck: 'false' });
   const token = h('input', { class: 'input', type: 'password', placeholder: 'github_pat_… (optional for public repositories)', autocomplete: 'off', spellcheck: 'false' });
+  const search = h('input', { class: 'input input-sm', type: 'search', placeholder: 'Search repositories', spellcheck: 'false', 'aria-label': 'Search repositories' });
   const err = h('div', { class: 'form-error', role: 'alert' });
   const btn = h('button', { class: 'btn btn-primary' }, icon('github', 15), current ? 'Switch repository' : 'Connect');
   const methodBox = h('div');
+  const listBox = h('div', { class: 'in-repo-box' });
+
+  const loadRepos = async () => {
+    loadedAt = Date.now();
+    reposError = null;
+    try {
+      repos = await api.get('/integrations/github/repos');
+      account = repos.account;
+      if (picked && !repos.installations.some((g) => g.repos.some((r) => r.full_name === picked && r.can_link))) picked = null;
+    } catch (ex) {
+      repos = null;
+      reposError = ex.message;
+      if (ex.status === 409) account = null; // expired or revoked: connect again
+    }
+    if (method === 'app') drawMethod();
+  };
+
+  const disconnectAccount = async () => {
+    if (!await confirmDialog('Repositories you already linked keep working through the app. To link more, connect your account again.',
+      { title: `Disconnect @${account.login}?`, confirmText: 'Disconnect', danger: true })) return;
+    try {
+      await api.del('/integrations/github/account');
+      account = null; repos = null; picked = null;
+      toast('GitHub account disconnected', 'success');
+      drawMethod();
+    } catch (ex) { errorToast(ex); }
+  };
+
+  function drawList() {
+    const q = search.value.trim().toLowerCase();
+    if (reposError) { mount(listBox, h('div', { class: 'in-error' }, icon('alert', 14), reposError)); return; }
+    if (!repos) { mount(listBox, h('div', { class: 'in-repo-loading' }, spinner())); return; }
+    const total = repos.installations.reduce((n, g) => n + g.repos.length, 0);
+    if (!total) {
+      mount(listBox, h('div', { class: 'in-repo-empty' }, icon('github', 20),
+        h('strong', null, 'No repositories yet'),
+        h('span', null, 'Install the app on GitHub and choose which repositories it can use. This list refreshes when you come back.'),
+        h('a', { class: 'btn btn-secondary btn-sm', href: installHref(projectId), target: '_blank', rel: 'noopener' }, icon('plus', 14), 'Install on GitHub')));
+      return;
+    }
+    const groups = repos.installations
+      .map((g) => ({ ...g, repos: g.repos.filter((r) => !q || r.full_name.toLowerCase().includes(q)) }))
+      .filter((g) => g.repos.length);
+    mount(listBox, h('div', { class: 'in-repo-list', role: 'listbox', 'aria-label': 'Repositories' },
+      groups.length ? groups.map((g) => [
+        repos.installations.length > 1 ? h('div', { class: 'in-repo-group' }, ghAvatar(g.avatar_url, g.account, 16), g.account) : null,
+        g.repos.map((r) => h('button', {
+          type: 'button', role: 'option', class: ['in-repo', picked === r.full_name && 'active'],
+          'aria-selected': String(picked === r.full_name), disabled: !r.can_link,
+          title: r.can_link ? r.full_name : 'You need triage access or more on GitHub to link this repository',
+          onclick: () => { picked = r.full_name; err.textContent = ''; drawList(); syncButton(); },
+          ondblclick: () => { picked = r.full_name; save(); },
+        },
+        h('span', { class: 'in-repo-icon' }, icon(r.private ? 'lock' : 'github', 14)),
+        h('span', { class: 'in-repo-text' },
+          h('span', { class: 'in-repo-name' }, r.full_name),
+          r.description ? h('span', { class: 'in-repo-desc' }, r.description) : null),
+        r.private ? h('span', { class: 'in-pill' }, 'Private') : null,
+        r.can_link ? null : h('span', { class: 'in-pill' }, 'Read only'),
+        h('span', { class: 'in-repo-check' }, picked === r.full_name ? icon('check', 15) : null))),
+      ]) : h('div', { class: 'in-repo-none' }, `No repository matches “${search.value.trim()}”.`)));
+  }
+
+  function appSection() {
+    if (!appInfo.oauth_ready) {
+      return h('div', { class: 'in-steps' }, icon('alert', 14), ' Connecting through the GitHub App needs GitHub sign-in on this server. ',
+        'An admin adds GITHUB_APP_CLIENT_ID and GITHUB_APP_CLIENT_SECRET to .env. Use a personal token until then.');
+    }
+    if (!account) {
+      const go = h('button', { class: 'btn btn-primary btn-sm' }, icon('github', 14), 'Connect GitHub account');
+      go.addEventListener('click', () => authorizeGithub(projectId, go));
+      return h('div', { class: 'in-account-cta' },
+        h('span', { class: 'in-method-icon' }, icon('github', 18)),
+        h('div', { class: 'grow' },
+          h('strong', null, 'Connect your GitHub account'),
+          h('span', null, 'GitHub asks you to authorize 6dx. You can then link the repositories you have access to where the app is installed.')),
+        go);
+    }
+    const refresh = h('button', { class: 'icon-btn', title: 'Refresh the list', 'aria-label': 'Refresh the list' }, icon('refresh', 15));
+    refresh.addEventListener('click', loadRepos);
+    return [
+      h('div', { class: 'in-account' }, ghAvatar(account.avatar_url, account.login, 30),
+        h('div', { class: 'grow' },
+          h('div', { class: 'in-account-name' }, account.name || account.login),
+          h('a', { class: 'small muted', href: account.html_url, target: '_blank', rel: 'noopener noreferrer' }, `Connected as @${account.login}`)),
+        h('button', { class: 'btn btn-ghost btn-sm', onclick: disconnectAccount }, 'Disconnect')),
+      h('div', { class: 'in-repo-search' }, search, refresh),
+      listBox,
+      h('p', { class: 'hint in-app-hint' }, 'Missing a repository? ',
+        h('a', { href: installHref(projectId), target: '_blank', rel: 'noopener' }, 'Add it to the app on GitHub'),
+        ', then come back. Everyone in this project will see its issues, pull requests and commits.'),
+    ];
+  }
+
+  function syncButton() {
+    btn.disabled = method === 'app' && (!account || !picked);
+  }
+
   const choice = (id, ic, title, text, badge) => h('button', {
     type: 'button', role: 'radio', class: ['in-method', method === id && 'active'], 'aria-checked': String(method === id),
-    onclick: () => { method = id; drawMethod(); },
+    onclick: () => { method = id; err.textContent = ''; drawMethod(); if (id === 'app' && account && !repos) loadRepos(); },
   }, h('span', { class: 'in-method-icon' }, icon(ic, 16)),
   h('span', { class: 'grow' }, h('strong', null, title, badge ? h('span', { class: 'in-pill in-pill-success' }, badge) : null), h('span', null, text)));
-  const drawMethod = () => mount(methodBox,
-    appReady ? h('div', { class: 'field' }, h('label', { class: 'label' }, 'Connect with'),
-      h('div', { class: 'in-methods', role: 'radiogroup' },
-        choice('app', 'shield', 'GitHub App', 'Acts as the app, not as you. Higher limits, short-lived tokens, can close issues.', 'Recommended'),
-        choice('token', 'key', 'Personal token', 'Use your own access token, or none for a public repository.'))) : null,
-    method === 'app'
-      ? h('p', { class: 'hint in-app-hint' }, 'The app must be installed on the repository. ',
-        appInfo.install_url ? h('a', { href: appInfo.install_url, target: '_blank', rel: 'noopener noreferrer' }, 'Install it on GitHub') : 'Install it from its GitHub page',
-        ', pick the repository, then connect here.')
-      : h('div', { class: 'field' }, h('label', { class: 'label' }, 'Access token'), token,
-        h('span', { class: 'hint' }, 'Needed for private repositories, and gives a much higher hourly limit. ',
-          h('a', { href: 'https://github.com/settings/personal-access-tokens/new', target: '_blank', rel: 'noopener noreferrer' }, 'Create a fine-grained token'),
-          ' with access to Contents (read), Issues, Pull requests and Metadata. It’s stored encrypted and never shown again.')));
-  drawMethod();
-  const save = async () => {
+
+  function drawMethod() {
+    mount(methodBox,
+      appReady ? h('div', { class: 'field' }, h('label', { class: 'label' }, 'Connect with'),
+        h('div', { class: 'in-methods', role: 'radiogroup' },
+          choice('app', 'shield', 'GitHub App', 'Sign in with GitHub, then pick a repository. Short-lived tokens, can close issues.', 'Recommended'),
+          choice('token', 'key', 'Personal token', 'Type the repository and use your own access token, or none if it’s public.'))) : null,
+      method === 'app'
+        ? appSection()
+        : [
+          h('div', { class: 'field' }, h('label', { class: 'label' }, 'Repository'), repo),
+          h('div', { class: 'field' }, h('label', { class: 'label' }, 'Access token'), token,
+            h('span', { class: 'hint' }, 'Needed for private repositories, and gives a much higher hourly limit. ',
+              h('a', { href: 'https://github.com/settings/personal-access-tokens/new', target: '_blank', rel: 'noopener noreferrer' }, 'Create a fine-grained token'),
+              ' with access to Contents (read), Issues, Pull requests and Metadata. It’s stored encrypted and never shown again.')),
+        ]);
+    if (method === 'app' && account) drawList();
+    syncButton();
+  }
+
+  async function save() {
     err.textContent = '';
-    if (!repo.value.trim()) { err.textContent = 'Enter a repository.'; repo.focus(); return; }
+    const name = method === 'app' ? picked : repo.value.trim();
+    if (!name) { err.textContent = method === 'app' ? 'Pick a repository.' : 'Enter a repository.'; if (method !== 'app') repo.focus(); return; }
     btn.disabled = true;
     try {
       const r = await api.post(`/projects/${projectId}/integrations/github`, {
-        repo: repo.value.trim(), method, token: method === 'token' ? (token.value.trim() || null) : null,
+        repo: name, method, token: method === 'token' ? (token.value.trim() || null) : null,
       });
       dlg.close();
       toast(`Connected to ${r.repo}${r.auth === 'app' ? ' through the GitHub App' : ''}`, 'success');
       done();
     } catch (ex) {
-      err.replaceChildren(ex.message, ex.status === 409 && appInfo.install_url && method === 'app'
-        ? [' ', h('a', { href: appInfo.install_url, target: '_blank', rel: 'noopener noreferrer' }, 'Install the app')] : '');
-      btn.disabled = false;
+      if (method === 'app' && ex.status === 409 && /Connect your GitHub account/i.test(ex.message)) { account = null; repos = null; drawMethod(); }
+      err.replaceChildren(ex.message, method === 'app' && /install/i.test(ex.message)
+        ? [' ', h('a', { href: installHref(projectId), target: '_blank', rel: 'noopener' }, 'Install the app')] : '');
+      syncButton();
+      if (method !== 'app') btn.disabled = false;
     }
-  };
+  }
+
+  search.addEventListener('input', drawList);
   btn.addEventListener('click', save);
   repo.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
+  // back from installing the app in another tab: show the new repositories
+  const onFocus = () => { if (method === 'app' && account && Date.now() - loadedAt > 3000) loadRepos(); };
+  window.addEventListener('focus', onFocus);
+  drawMethod();
+  if (method === 'app' && account) loadRepos();
   const dlg = openModal({
     title: current ? 'Switch GitHub repository' : 'Connect GitHub',
-    width: 560,
-    content: h('div', null, h('div', { class: 'field' }, h('label', { class: 'label' }, 'Repository'), repo), methodBox, err),
+    width: 580,
+    content: h('div', null, methodBox, err),
     footer: [h('button', { class: 'btn btn-ghost', onclick: () => dlg.close() }, 'Cancel'), btn],
+    onClose: () => window.removeEventListener('focus', onFocus),
   });
+  if (method === 'token') repo.focus();
 }
 
 function connectWebhook(projectId, provider, events, done) {
@@ -192,7 +324,7 @@ function manageIntegration(projectId, integ, events, done, appInfo = {}) {
           h('button', { class: 'btn btn-ghost btn-sm', onclick: () => { dlg.close(); connectGithub(projectId, integ, done, appInfo); } }, 'Switch')),
         integ.auth === 'app'
           ? row('Connected with', h('span', { class: 'in-pill in-pill-success' }, icon('shield', 11), 'GitHub App'),
-            h('span', { class: 'small muted' }, 'Short-lived tokens, no personal access needed.'))
+            h('span', { class: 'small muted' }, integ.linked_by ? `Linked by @${integ.linked_by}. Short-lived tokens.` : 'Short-lived tokens, no personal access needed.'))
           : [
             row('Access token', integ.has_token ? h('span', { class: 'in-pill in-pill-success' }, icon('check', 11), 'Saved') : h('span', { class: 'in-pill' }, 'None'),
               integ.has_token ? h('button', { class: 'btn btn-ghost btn-sm', onclick: () => patch({ token: '' }, 'Token removed') }, 'Remove') : null,
@@ -443,7 +575,17 @@ export default async function render(root, { params }) {
       gh ? gh.el : null);
   }
 
+  // back from GitHub (account authorized, or the app installed)
+  const back = new URLSearchParams(location.hash.slice(1));
+  if (back.has('github') || back.has('github_error')) history.replaceState(history.state, '', location.pathname + location.search);
   await load();
+  if (back.get('github_error')) toast(back.get('github_error'), 'error');
+  else if (back.get('github') === 'requested') toast('Install request sent. An owner of the organization has to approve it on GitHub.', 'success');
+  else if (['connected', 'installed'].includes(back.get('github')) && data) {
+    toast(back.get('github') === 'connected' ? 'GitHub account connected. Pick a repository.' : 'GitHub App installed. Pick a repository.', 'success');
+    const linked = data.connected.find((i) => i.provider === 'github');
+    if (data.can_manage) connectGithub(projectId, linked ? { ...linked, auth: 'app' } : null, load, data.github_app);
+  }
   const offs = [
     on('ws', (msg) => {
       if (msg.project_id !== projectId) return;

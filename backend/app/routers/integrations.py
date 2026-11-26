@@ -7,17 +7,23 @@ Slack / Discord: post a message to a channel when tasks are created, completed, 
 Secrets (GitHub tokens, webhook URLs) are stored encrypted and never sent back to the browser.
 """
 
+import base64
 import hashlib
 import hmac
 import json
 import logging
 import re
+import secrets
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
+from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+import jwt
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import event, select
 from sqlalchemy.orm import Session, selectinload
@@ -86,10 +92,11 @@ class ImportIn(BaseModel):
 # ---------------------------------------------------------------- outside calls (tests replace these)
 
 class GithubError(Exception):
-    def __init__(self, status: int, message: str):
+    def __init__(self, status: int, message: str, upstream: int | None = None):
         super().__init__(message)
         self.status = status
         self.message = message
+        self.upstream = upstream  # GitHub's own status code, when it matters (401: token revoked or expired)
 
 
 def github_request(path: str, token: str | None = None, params: dict | None = None):
@@ -101,7 +108,7 @@ def github_request(path: str, token: str | None = None, params: dict | None = No
     except httpx.HTTPError as exc:
         raise GithubError(502, "Couldn't reach GitHub. Check this server's internet connection.") from exc
     if res.status_code == 401:
-        raise GithubError(400, "GitHub rejected the access token. Create a new one and try again.")
+        raise GithubError(400, "GitHub rejected the access token. Create a new one and try again.", 401)
     if res.status_code in (403, 429):
         if res.headers.get("x-ratelimit-remaining") == "0":
             raise GithubError(429, "GitHub's hourly limit was reached. Add an access token for a higher limit, or try later.")
@@ -225,6 +232,7 @@ def integration_out(i: m.Integration) -> dict:
     if i.provider == "github":
         out.update(repo=cfg.get("repo"), html_url=cfg.get("html_url"), private=cfg.get("private", False),
                    default_branch=cfg.get("default_branch"), has_token=bool(i.secret), auth=_auth_kind(i),
+                   linked_by=cfg.get("linked_by"),
                    close_issues=bool(cfg.get("close_issues")), auto_import=bool(cfg.get("auto_import")))
     else:
         out.update(events=cfg.get("events", []), hint=cfg.get("hint"))
@@ -241,6 +249,244 @@ def _validate_repo(raw: str, token: str | None) -> dict:
         raise HTTPException(exc.status, exc.message) from exc
 
 
+# ---------------------------------------------------------------- GitHub account (user authorization through the app)
+#
+# Linking a repository through the GitHub App is only allowed for someone whose own GitHub account can reach it:
+# the app is often installed on many repositories (private ones included), and without this check anyone with a
+# 6dx account could link any of them just by typing its name.
+
+GH_COOKIE = "gh_oauth"
+GH_BACK_COOKIE = "gh_back"
+GH_COOKIE_PATH = "/api/integrations/github"
+LINK_PERMISSIONS = ("admin", "maintain", "push", "triage")  # enough to close issues, so enough to link
+EXPIRED = "Your GitHub connection expired or was revoked. Connect your GitHub account again."
+BACK_RE = re.compile(r"^/projects/\d+/integrations$")
+_refresh_lock = threading.Lock()
+
+
+class GithubAuthorizeIn(BaseModel):
+    project_id: int | None = None
+
+
+def _account(db: Session, user: m.User) -> m.GithubAccount | None:
+    return db.scalar(select(m.GithubAccount).where(m.GithubAccount.user_id == user.id))
+
+
+def account_out(acc: m.GithubAccount | None) -> dict | None:
+    if not acc:
+        return None
+    return {"login": acc.login, "name": acc.name, "avatar_url": acc.avatar_url,
+            "html_url": f"https://github.com/{acc.login}", "connected_at": iso(acc.created_at)}
+
+
+def _store_tokens(acc: m.GithubAccount, tok: dict) -> None:
+    now = m.utcnow()
+    acc.access_token = seal(tok["access_token"])
+    acc.refresh_token = seal(tok.get("refresh_token"))
+    acc.expires_at = now + timedelta(seconds=int(tok["expires_in"])) if tok.get("expires_in") else None
+    acc.refresh_expires_at = (now + timedelta(seconds=int(tok["refresh_token_expires_in"]))
+                              if tok.get("refresh_token_expires_in") else None)
+    acc.updated_at = now
+
+
+def _drop_account(db: Session, acc: m.GithubAccount) -> HTTPException:
+    db.delete(acc)
+    db.commit()
+    return HTTPException(409, EXPIRED)
+
+
+def _user_token(db: Session, user: m.User) -> tuple[m.GithubAccount, str]:
+    """The person's GitHub user access token, refreshed when it's about to expire (refresh tokens are single-use)."""
+    acc = _account(db, user)
+    if not acc:
+        raise HTTPException(409, "Connect your GitHub account first.")
+    with _refresh_lock:
+        db.refresh(acc)
+        token = unseal(acc.access_token)
+        now = m.utcnow()
+        if token and (not acc.expires_at or acc.expires_at - now > timedelta(minutes=5)):
+            return acc, token
+        refresh = unseal(acc.refresh_token)
+        if not refresh or (acc.refresh_expires_at and acc.refresh_expires_at <= now):
+            raise _drop_account(db, acc)
+        try:
+            tok = github_app.refresh_user_token(refresh)
+        except github_app.GithubAppError as exc:
+            if exc.status == 401:
+                raise _drop_account(db, acc) from exc
+            raise HTTPException(exc.status, exc.message) from exc
+        _store_tokens(acc, tok)
+        db.commit()
+        return acc, tok["access_token"]
+
+
+def _can_link(perms: dict | None) -> bool:
+    return True if perms is None else any(perms.get(k) for k in LINK_PERMISSIONS)
+
+
+def _verify_app_repo(db: Session, user: m.User, raw: str) -> dict:
+    """Check that the person's GitHub account can reach the repository with at least triage access and that the
+    app is installed on it. Returns the repository and the integration settings for an app connection."""
+    match = REPO_RE.match(raw.strip())
+    if not match:
+        raise HTTPException(422, "Enter the repository as owner/name, or paste its GitHub link.")
+    name = f"{match.group(1)}/{match.group(2)}"
+    acc, token = _user_token(db, user)
+    try:
+        # a user token of a GitHub App only reaches repositories both the person and the app can access
+        seen = github_request(f"/repos/{name}", token)
+    except GithubError as exc:
+        if exc.upstream == 401:
+            raise _drop_account(db, acc) from exc
+        if exc.status == 404:
+            raise HTTPException(404, f"{name} isn't among the repositories your GitHub account (@{acc.login}) can "
+                                     "reach through the app. Check the name, or install the app on it.") from exc
+        raise HTTPException(exc.status, exc.message) from exc
+    full = seen["full_name"]
+    if not _can_link(seen.get("permissions") or {}):
+        raise HTTPException(403, f"Your GitHub account (@{acc.login}) needs at least triage access to {full} to link it.")
+    try:
+        installation = github_app.find_installation(full)
+        if not installation:
+            raise HTTPException(409, f"The GitHub App isn't installed on {full} yet. Install it on the repository, then connect again.")
+        repo = _validate_repo(full, github_app.installation_token(installation))
+    except github_app.GithubAppError as exc:
+        raise HTTPException(exc.status, exc.message) from exc
+    return {"repo": repo, "auth": "app", "installation_id": installation, "linked_by": acc.login,
+            "close_issues": True, "auto_import": False}
+
+
+def _gh_redirect_uri(request: Request) -> str:
+    return f"{public_base(request)}/api/integrations/github/callback"
+
+
+def _finish(dest: str, **fragment) -> RedirectResponse:
+    resp = RedirectResponse(f"{dest}#{urlencode(fragment)}", status_code=302)
+    resp.delete_cookie(GH_COOKIE, path=GH_COOKIE_PATH)
+    return resp
+
+
+@router.post("/integrations/github/authorize")
+def github_authorize(body: GithubAuthorizeIn, request: Request, response: Response,
+                     user: m.User = Depends(current_user), db: Session = Depends(get_db)):
+    """Start connecting the person's GitHub account; returns the GitHub page to open."""
+    if not github_app.oauth_ready():
+        raise HTTPException(409, "GitHub sign-in isn't set up on this server. Add GITHUB_APP_CLIENT_ID and "
+                                 "GITHUB_APP_CLIENT_SECRET to .env.")
+    back = "/dashboard"
+    if body.project_id:
+        require_role(db, body.project_id, user, "viewer")
+        back = f"/projects/{body.project_id}/integrations"
+    state = secrets.token_urlsafe(24)
+    verifier = secrets.token_urlsafe(48)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    # Bound to this browser and this person: the callback only completes where the flow was started.
+    cookie = jwt.encode({"uid": user.id, "state": state, "verifier": verifier, "back": back,
+                         "exp": m.utcnow() + timedelta(minutes=10)}, config.SECRET_KEY, algorithm="HS256")
+    response.set_cookie(GH_COOKIE, cookie, max_age=600, httponly=True, samesite="lax",
+                        secure=request.url.scheme == "https", path=GH_COOKIE_PATH)
+    return {"url": github_app.authorize_url(_gh_redirect_uri(request), state, challenge)}
+
+
+@router.get("/integrations/github/callback")
+def github_callback(request: Request, code: str = "", state: str = "", error: str = "", db: Session = Depends(get_db)):
+    try:
+        saved = jwt.decode(request.cookies.get(GH_COOKIE, ""), config.SECRET_KEY, algorithms=["HS256"])
+    except jwt.PyJWTError:
+        return _finish("/dashboard", github_error="The GitHub connection timed out or was started in another browser. Try again.")
+    dest = saved.get("back") if BACK_RE.match(saved.get("back") or "") else "/dashboard"
+    if error:
+        return _finish(dest, github_error="Connecting GitHub was cancelled." if error == "access_denied" else f"GitHub error: {error}")
+    if not code or not state or not hmac.compare_digest(saved.get("state", ""), state):
+        return _finish(dest, github_error="GitHub sent an unexpected response. Try again.")
+    user = db.get(m.User, saved.get("uid"))
+    if not user or user.disabled:
+        return _finish("/login", github_error="Sign in again, then connect GitHub.")
+    try:
+        tok = github_app.exchange_code(code, _gh_redirect_uri(request), saved.get("verifier"))
+        me = github_request("/user", tok["access_token"])
+    except (github_app.GithubAppError, GithubError) as exc:
+        return _finish(dest, github_error=exc.message)
+    acc = _account(db, user)
+    if not acc:
+        acc = m.GithubAccount(user_id=user.id)
+        db.add(acc)
+    acc.github_id, acc.login = int(me["id"]), str(me["login"])[:100]
+    acc.name = (me.get("name") or "")[:200] or None
+    acc.avatar_url = (me.get("avatar_url") or "")[:500] or None
+    _store_tokens(acc, tok)
+    db.commit()
+    return _finish(dest, github="connected")
+
+
+@router.delete("/integrations/github/account")
+def github_disconnect(user: m.User = Depends(current_user), db: Session = Depends(get_db)):
+    """Forget the person's GitHub account. Repositories they already linked keep working through the app."""
+    acc = _account(db, user)
+    if acc:
+        token = unseal(acc.access_token)
+        db.delete(acc)
+        db.commit()
+        if token and github_app.oauth_ready():
+            github_app.revoke_user_token(token)
+    return {"ok": True}
+
+
+@router.get("/integrations/github/repos")
+def github_repos(user: m.User = Depends(current_user), db: Session = Depends(get_db)):
+    """Repositories the person can link: reachable by both their GitHub account and the app."""
+    if not github_app.oauth_ready():
+        raise HTTPException(409, "GitHub sign-in isn't set up on this server.")
+    acc, token = _user_token(db, user)
+    groups = []
+    try:
+        installs = github_request("/user/installations", token, {"per_page": 100}).get("installations", [])
+        for inst in installs[:20]:
+            repos: list[dict] = []
+            for page in range(1, 6):
+                chunk = github_request(f"/user/installations/{inst['id']}/repositories", token,
+                                       {"per_page": 100, "page": page}).get("repositories", [])
+                repos += chunk
+                if len(chunk) < 100:
+                    break
+            repos.sort(key=lambda r: r.get("pushed_at") or "", reverse=True)
+            owner = inst.get("account") or {}
+            groups.append({
+                "installation_id": inst["id"], "account": owner.get("login"), "avatar_url": owner.get("avatar_url"),
+                "type": owner.get("type"), "selection": inst.get("repository_selection"), "manage_url": inst.get("html_url"),
+                "repos": [{"full_name": r["full_name"], "private": bool(r.get("private")),
+                           "description": (r.get("description") or "")[:200], "pushed_at": r.get("pushed_at"),
+                           "can_link": _can_link(r.get("permissions"))} for r in repos],
+            })
+    except GithubError as exc:
+        if exc.upstream == 401:
+            raise _drop_account(db, acc) from exc
+        raise HTTPException(exc.status, exc.message) from exc
+    return {"account": account_out(acc), "installations": groups, "install_url": github_app.install_url()}
+
+
+@router.get("/integrations/github/install")
+def github_install(back: str = ""):
+    """Open the app's install page; remembers where to come back to if the app's Setup URL points here."""
+    url = github_app.install_url()
+    if not url:
+        raise HTTPException(404, "The GitHub App's name (GITHUB_APP_SLUG) isn't set on this server.")
+    resp = RedirectResponse(url, status_code=302)
+    if BACK_RE.match(back):
+        resp.set_cookie(GH_BACK_COOKIE, back, max_age=3600, httponly=True, samesite="lax", path=GH_COOKIE_PATH)
+    return resp
+
+
+@router.get("/integrations/github/setup")
+def github_setup(request: Request, setup_action: str = ""):
+    """Optional Setup URL for the app: GitHub sends people here after they install it."""
+    back = request.cookies.get(GH_BACK_COOKIE, "")
+    dest = back if BACK_RE.match(back) else "/dashboard"
+    resp = RedirectResponse(f"{dest}#{urlencode({'github': 'requested' if setup_action == 'request' else 'installed'})}", 302)
+    resp.delete_cookie(GH_BACK_COOKIE, path=GH_COOKIE_PATH)
+    return resp
+
+
 # ---------------------------------------------------------------- manage connections
 
 @router.get("/projects/{project_id}/integrations")
@@ -251,13 +497,15 @@ def list_integrations(project_id: int, request: Request, user: m.User = Depends(
         "connected": [integration_out(i) for i in rows],
         "events": NOTIFY_EVENTS,
         "can_manage": ROLE_RANK[pm.role] >= ROLE_RANK["admin"],
-        "github_app": github_app_info(request),
+        "github_app": github_app_info(request, db, user),
     }
 
 
-def github_app_info(request: Request) -> dict:
+def github_app_info(request: Request, db: Session, user: m.User) -> dict:
     return {
         "configured": github_app.configured(),
+        "oauth_ready": github_app.oauth_ready(),
+        "account": account_out(_account(db, user)),
         "install_url": github_app.install_url(),
         "webhook_url": f"{public_base(request)}/api/integrations/github/webhook",
         "webhook_ready": bool(config.GITHUB_WEBHOOK_SECRET),
@@ -269,26 +517,18 @@ def connect_github(project_id: int, body: GithubConnectIn, user: m.User = Depend
                    db: Session = Depends(get_db)):
     _software_project(db, project_id, user, "admin")
     token = (body.token or "").strip() or None
-    method = body.method or ("token" if token or not github_app.configured() else "app")
+    method = body.method or ("token" if token or not github_app.oauth_ready() else "app")
     if method not in ("app", "token"):
         raise HTTPException(422, "Choose the GitHub App or a personal token")
     if method == "app" and not github_app.configured():
         raise HTTPException(409, "The GitHub App isn't set up on this server. Use a personal token, or add the app's settings to .env.")
+    if method == "app" and not github_app.oauth_ready():
+        raise HTTPException(409, "Connecting through the GitHub App needs GitHub sign-in on this server "
+                                 "(GITHUB_APP_CLIENT_ID and GITHUB_APP_CLIENT_SECRET in .env). Use a personal token for now.")
     app_cfg = {}
     if method == "app":
-        # Preferred: act as the GitHub App installed on the repository
-        match = REPO_RE.match(body.repo.strip())
-        if not match:
-            raise HTTPException(422, "Enter the repository as owner/name, or paste its GitHub link.")
-        name = f"{match.group(1)}/{match.group(2)}"
-        try:
-            installation = github_app.find_installation(name)
-            if not installation:
-                raise HTTPException(409, f"The GitHub App isn't installed on {name} yet. Install it on the repository, then connect again.")
-            repo = _validate_repo(name, github_app.installation_token(installation))
-        except github_app.GithubAppError as exc:
-            raise HTTPException(exc.status, exc.message) from exc
-        app_cfg = {"auth": "app", "installation_id": installation, "close_issues": True, "auto_import": False}
+        app_cfg = _verify_app_repo(db, user, body.repo)
+        repo = app_cfg.pop("repo")
     else:
         repo = _validate_repo(body.repo, token)
     integ = _get(db, project_id, "github")

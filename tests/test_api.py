@@ -4,7 +4,8 @@ import time
 
 os.environ["TEKPLANE_DATA_DIR"] = tempfile.mkdtemp()
 # never use the real GitHub App from .env in tests (real env vars win over .env)
-for _key in ("GITHUB_APP_ID", "GITHUB_APP_SLUG", "GITHUB_APP_PRIVATE_KEY", "GITHUB_APP_PRIVATE_KEY_PATH", "GITHUB_WEBHOOK_SECRET"):
+for _key in ("GITHUB_APP_ID", "GITHUB_APP_SLUG", "GITHUB_APP_PRIVATE_KEY", "GITHUB_APP_PRIVATE_KEY_PATH", "GITHUB_WEBHOOK_SECRET",
+             "GITHUB_APP_CLIENT_ID", "GITHUB_APP_CLIENT_SECRET"):
     os.environ[_key] = ""
 
 import pytest  # noqa: E402
@@ -616,16 +617,42 @@ def test_github_app_optional(monkeypatch):
     claims = pyjwt.decode(github_app.app_jwt(), key.public_key(), algorithms=["RS256"])
     assert claims["iss"] == "4242" and claims["exp"] - claims["iat"] <= 600
 
-    installed = {"acme/rocket": 77}
+    installed = {"acme/rocket": 77, "acme/docs": 77}
     monkeypatch.setattr(github_app, "find_installation", lambda repo: installed.get(repo))
     monkeypatch.setattr(github_app, "installation_token", lambda inst: f"ghs_inst_{inst}")
     seen_tokens = []
+    # what each person's GitHub account can reach through the app, with their permission there
+    user_repos = {"acme/rocket": {"pull": True, "triage": True, "push": True}, "acme/docs": {"pull": True},
+                  "acme/other": {"pull": True, "admin": True}}
 
     def fake_github(path, token=None, params=None):
         seen_tokens.append(token)
+        if path == "/user":
+            return {"id": 9, "login": "octo", "name": "Octo Cat", "avatar_url": "https://avatars.example/octo"}
+        if path == "/user/installations":
+            if token == "ghu_revoked":
+                raise integ.GithubError(400, "rejected", 401)
+            return {"installations": [{"id": 77, "account": {"login": "acme", "type": "Organization"},
+                                       "repository_selection": "selected", "html_url": "https://github.com/settings/installations/77"}]}
+        if path == "/user/installations/77/repositories":
+            return {"repositories": [{"full_name": n, "private": n == "acme/rocket", "pushed_at": "2026-11-2%dT00:00:00Z" % i,
+                                      "permissions": perms} for i, (n, perms) in enumerate(user_repos.items())]}
         if path.startswith("/repos/acme/"):
-            return {"full_name": path[7:], "html_url": f"https://github.com/{path[7:]}", "private": True, "default_branch": "main"}
+            name = path[7:]
+            if token and token.startswith("ghu_"):  # the person's own token
+                if name not in user_repos:
+                    raise integ.GithubError(404, "Repository not found.")
+                return {"full_name": name, "permissions": user_repos[name]}
+            return {"full_name": name, "html_url": f"https://github.com/{name}", "private": True, "default_branch": "main"}
         raise AssertionError(path)
+
+    exchanged, refreshed, revoked = [], [], []
+    monkeypatch.setattr(github_app, "exchange_code", lambda code, redirect_uri, verifier=None: exchanged.append(
+        (code, redirect_uri, verifier)) or {"access_token": "ghu_user", "expires_in": 28800, "refresh_token": "ghr_1",
+                                             "refresh_token_expires_in": 15897600})
+    monkeypatch.setattr(github_app, "refresh_user_token", lambda rt: refreshed.append(rt) or {
+        "access_token": "ghu_fresh", "expires_in": 28800, "refresh_token": "ghr_2", "refresh_token_expires_in": 15897600})
+    monkeypatch.setattr(github_app, "revoke_user_token", lambda t: revoked.append(t))
 
     writes = []
     monkeypatch.setattr(integ, "github_request", fake_github)
@@ -640,12 +667,86 @@ def test_github_app_optional(monkeypatch):
         assert info["configured"] and info["install_url"] == "https://github.com/apps/tek-plane-app/installations/new"
         assert info["webhook_url"].endswith("/api/integrations/github/webhook") and info["webhook_ready"]
 
+        # without the app's client ID/secret nobody can link through the app (no way to check their access)
+        assert not info["oauth_ready"]
+        r = c.post(f"{base}/integrations/github", json={"repo": "acme/rocket", "method": "app"}, headers=h)
+        assert r.status_code == 409 and "GITHUB_APP_CLIENT_SECRET" in r.json()["detail"]
+        monkeypatch.setattr(config, "GITHUB_APP_CLIENT_ID", "Iv_test")
+        monkeypatch.setattr(config, "GITHUB_APP_CLIENT_SECRET", "cs_test")
+        info = c.get(f"{base}/integrations", headers=h).json()["github_app"]
+        assert info["oauth_ready"] and info["account"] is None
+
+        # typing a repository name isn't enough: the person must connect their own GitHub account first
+        r = c.post(f"{base}/integrations/github", json={"repo": "acme/rocket"}, headers=h)
+        assert r.status_code == 409 and "Connect your GitHub account" in r.json()["detail"]
+        assert c.get("/api/integrations/github/repos", headers=h).status_code == 409
+
+        # authorize: explicit redirect_uri, state + PKCE, and a cookie that binds the flow to this browser
+        from urllib.parse import parse_qs, urlsplit
+        url = c.post("/api/integrations/github/authorize", json={"project_id": sw["id"]}, headers=h).json()["url"]
+        q = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
+        assert url.startswith("https://github.com/login/oauth/authorize?") and q["client_id"] == "Iv_test"
+        assert q["redirect_uri"].endswith("/api/integrations/github/callback") and q["code_challenge_method"] == "S256"
+        cb = "/api/integrations/github/callback"
+        bad = c.get(cb, params={"code": "abc", "state": "forged"}, follow_redirects=False)
+        assert bad.status_code == 302 and "github_error=" in bad.headers["location"] and not exchanged
+        # a failed callback ends that attempt; start again
+        url = c.post("/api/integrations/github/authorize", json={"project_id": sw["id"]}, headers=h).json()["url"]
+        q = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
+        ok = c.get(cb, params={"code": "abc", "state": q["state"]}, follow_redirects=False)
+        assert ok.headers["location"] == f"/projects/{sw['id']}/integrations#github=connected"
+        assert exchanged[0][0] == "abc" and exchanged[0][2]  # PKCE verifier sent with the code
+        # the cookie is single-use: replaying the callback doesn't work
+        again = c.get(cb, params={"code": "abc", "state": q["state"]}, follow_redirects=False)
+        assert "github_error=" in again.headers["location"] and len(exchanged) == 1
+        info = c.get(f"{base}/integrations", headers=h).json()["github_app"]
+        assert info["account"]["login"] == "octo"
+
+        # the picker lists what both the person and the app can reach; read-only ones can't be linked
+        listed = c.get("/api/integrations/github/repos", headers=h).json()
+        repos = {r["full_name"]: r for g in listed["installations"] for r in g["repos"]}
+        assert repos["acme/rocket"]["can_link"] and not repos["acme/docs"]["can_link"]
+        r = c.post(f"{base}/integrations/github", json={"repo": "acme/docs"}, headers=h)
+        assert r.status_code == 403 and "triage" in r.json()["detail"]
+        r = c.post(f"{base}/integrations/github", json={"repo": "acme/secret"}, headers=h)
+        assert r.status_code == 404 and "@octo" in r.json()["detail"]
         # not installed on that repository yet
         r = c.post(f"{base}/integrations/github", json={"repo": "acme/other"}, headers=h)
         assert r.status_code == 409 and "isn't installed" in r.json()["detail"]
+        # someone else in the project, without a GitHub account, can't link through the app
+        h2, _ = login(c, "app-peer@x.io", "Peer")
+        assert c.post(f"{base}/integrations/github", json={"repo": "acme/rocket"}, headers=h2).status_code in (403, 404)
         # the GitHub App is the default when set up; installation token is used, nothing is stored
         r = c.post(f"{base}/integrations/github", json={"repo": "acme/rocket"}, headers=h).json()
         assert r["auth"] == "app" and not r["has_token"] and r["close_issues"] and seen_tokens[-1] == "ghs_inst_77"
+        assert r["linked_by"] == "octo"
+
+        # an expiring user token is refreshed (refresh tokens rotate)
+        from backend.app import models as m
+        from backend.app.db import SessionLocal
+        with SessionLocal() as db:
+            acc = db.query(m.GithubAccount).one()
+            acc.expires_at = m.utcnow()
+            db.commit()
+        assert c.get("/api/integrations/github/repos", headers=h).status_code == 200
+        assert refreshed == ["ghr_1"] and "ghu_fresh" in seen_tokens
+        # a token revoked on GitHub disconnects the account
+        from backend.app.secretbox import seal
+        with SessionLocal() as db:
+            acc = db.query(m.GithubAccount).one()
+            acc.access_token = seal("ghu_revoked")
+            db.commit()
+        r = c.get("/api/integrations/github/repos", headers=h)
+        assert r.status_code == 409 and "Connect your GitHub account again" in r.json()["detail"]
+        assert c.get(f"{base}/integrations", headers=h).json()["github_app"]["account"] is None
+        # connect again, then disconnect: the token is revoked on GitHub; the linked repository keeps working
+        url = c.post("/api/integrations/github/authorize", json={"project_id": sw["id"]}, headers=h).json()["url"]
+        state = parse_qs(urlsplit(url).query)["state"][0]
+        c.get(cb, params={"code": "def", "state": state}, follow_redirects=False)
+        assert c.delete("/api/integrations/github/account", headers=h).json()["ok"] and revoked == ["ghu_user"]
+        assert c.get(f"{base}/integrations", headers=h).json()["connected"][0]["auth"] == "app"
+        url = c.post("/api/integrations/github/authorize", json={"project_id": sw["id"]}, headers=h).json()["url"]
+        c.get(cb, params={"code": "ghi", "state": parse_qs(urlsplit(url).query)["state"][0]}, follow_redirects=False)
         # …but it's optional: a personal token (or none) still works
         r2 = c.post(f"{base}/integrations/github", json={"repo": "acme/rocket", "method": "token", "token": "ghp_x"}, headers=h).json()
         assert r2["auth"] == "token" and r2["has_token"]

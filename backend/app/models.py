@@ -363,3 +363,21 @@ class Integration(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
+
+class GithubAccount(Base):
+    """A person's GitHub identity, authorized through the GitHub App. Its user access token can only reach
+    repositories that both the person and the app can access, which is how linking a repository is checked."""
+    __tablename__ = "github_accounts"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True)
+    github_id: Mapped[int] = mapped_column(Integer, index=True)
+    login: Mapped[str] = mapped_column(String(100))
+    name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    access_token: Mapped[str] = mapped_column(Text)  # encrypted
+    refresh_token: Mapped[str | None] = mapped_column(Text, nullable=True)  # encrypted
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    refresh_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
